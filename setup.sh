@@ -1,3 +1,29 @@
-# install scipy
+#!/bin/bash
 
-# install vit-pytorch
+# Initialize and update all submodules
+git submodule update --init --recursive
+
+# Read .gitmodules file and process each submodule
+while IFS= read -r line
+do
+    if [[ $line == *"path = "* ]]; then
+        # Extract submodule path
+        submodule_path=$(echo $line | sed 's/.*path = //')
+        
+        echo "Processing submodule: $submodule_path"
+        
+        # Change to submodule directory
+        cd "$submodule_path"
+        
+        # Install the package in editable mode
+        pip install -e .
+        
+        # Return to the root directory
+        cd - > /dev/null
+    fi
+done < .gitmodules
+
+echo "Sobumodule setup complete."
+
+pip install scipy
+
