@@ -24,8 +24,20 @@ class NaViTDataset(Dataset):
             'iPad-Pro': (1138, 1518),
             'iPhone-13 Pro': (650, 1407)
         }
+
+        def ensure_rgb(image):
+            if image.shape[0] == 4:  # If the image has 4 channels (RGBA)
+                return image[:3, :, :]  # Return only the first 3 channels (RGB)
+            return image
+
+        self.transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Lambda(ensure_rgb),  # Add this line
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
         self.to_tensor = transforms.ToTensor()
         self.current_idx = 0
+    
 
     def __len__(self):
         return len(self.dataset)
@@ -36,9 +48,10 @@ class NaViTDataset(Dataset):
         self.current_idx = (self.current_idx + 1) % len(self)
         item = self.dataset[idx]
         # 20 ms
-        image = self.rescale_image(self.to_tensor(item['image']), idx).to(device)
+        image = self.rescale_image(self.transform(item['image']), idx).to(device)
         
         content_boxes = item['contentBoxes']
+        content_boxes.sort(key=lambda box: (box[1], box[0]))  # Sort by y0, then x0
         key = item['key_name']
         
         # Rescale bounding boxes
@@ -145,18 +158,20 @@ if __name__ == '__main__':
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    logging = 0
+    logging = 1
     BS = 2
     patch_size = 16
     max_img_size = 14*200 # 1920x1080
     max_batch_tokens = 1920//patch_size * 1080//patch_size
-    n_bboxs = 100
+    n_bboxs = 100 
     dtype = torch.float32
     dim_head = 64
     n_heads = 2
     dim = 1024
+    depth = 8
 
     if logging:
+        wandb.login()
         wandb.init(project="NaViT_training", config={
             "batch_size": BS,
             "patch_size": patch_size,
@@ -165,7 +180,8 @@ if __name__ == '__main__':
             "n_bboxs": n_bboxs,
             "dim_head": dim_head,
             "n_heads": n_heads,
-            "dim": dim
+            "dim": dim,
+            "depth": depth
         })
 
     v = NaViT(
@@ -174,7 +190,7 @@ if __name__ == '__main__':
         n_bboxs = n_bboxs,
         dim = dim,
         heads = n_heads,
-        depth = 16,
+        depth = depth,
         mlp_dim = 2048,
         dropout = 0.1,
         emb_dropout = 0.1,
@@ -198,19 +214,33 @@ if __name__ == '__main__':
         #dataloader = DataLoader(navit_dataset, batch_size=BS, collate_fn=navit_collate_fn, shuffle=True)
 
     def loss_fn(confidence_pred, bbox_pred, confidence_target, bbox_target):
-        # Confidence loss (binary cross-entropy)
         confidence_loss = F.binary_cross_entropy_with_logits(confidence_pred, confidence_target)
-
-        # bbox loss (only for positive samples)
+        
         positive_mask = confidence_target > 0
-        bbox_loss = F.mse_loss(bbox_pred[positive_mask], bbox_target[positive_mask])
-
-        # Combine losses (you can adjust the weighting if needed)
+        '''
+        bbox_loss = generalized_box_iou_loss(
+            bbox_pred[positive_mask],
+            bbox_target[positive_mask],
+            reduction='mean',
+            eps=1e-7
+        )
+        '''
+        bbox_loss = F.smooth_l1_loss(bbox_pred[positive_mask], bbox_target[positive_mask])
+        
         total_loss = confidence_loss + bbox_loss
+        return total_loss, confidence_loss, bbox_loss
 
-        return total_loss
+    optim = torch.optim.AdamW(v.parameters(), lr=1e-4)
+    # Gradient clipping
+    max_grad_norm = 10.0
+    def get_gradient_norm(model):
+        total_norm = 0
+        for p in model.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+        return total_norm ** 0.5
 
-    optim = torch.optim.Adam(v.parameters(), lr=3e-4)
 
     for batch_idx, batch in enumerate(get_batch(dataset)):
         start_time = time.time()  # Start timing the step
@@ -239,36 +269,38 @@ if __name__ == '__main__':
         confidence_target = torch.stack([torch.tensor(ct, device=device) for ct in confidence_targets]).to(dtype=dtype)
         bbox_target = torch.stack([torch.tensor(bt, device=device) for bt in bbox_targets]).to(dtype=dtype)
 
-        print('target shapes:')
-        print(confidence_target.shape)
-        print(bbox_target.shape)
-
         preds = v(batched_imgs)
         preds = preds.view(confidence_target.shape[0], n_bboxs, 5)
 
         confidence_preds = preds[:, :, 0]  # Shape: (batch_size, 100)
         bboxs_preds = preds[:, :, 1:]     # Shape: (batch_size, 100, 4)
 
-        print(confidence_preds.dtype)
-        print(confidence_target.dtype)
-        print(confidence_preds)
-        print(bboxs_preds)
-
-        loss = loss_fn(confidence_preds, bboxs_preds, confidence_target, bbox_target)
+        loss, conf_loss, bbox_loss = loss_fn(confidence_preds, bboxs_preds, confidence_target, bbox_target)
         loss.backward()
+
+        pre_clip_grad_norm = get_gradient_norm(v)
+        torch.nn.utils.clip_grad_norm_(v.parameters(), max_grad_norm)
+        post_clip_grad_norm = get_gradient_norm(v)
+
+        print(f"Pre-clip grad norm: {pre_clip_grad_norm}, Post-clip grad norm: {post_clip_grad_norm}")
+
         optim.step()
 
         end_time = time.time()  # End timing the step
         step_time = end_time - start_time  # Calculate step time
 
-        print(f"Loss: {loss.item()}")
+        print(f"Total imgs in batch: {confidence_target.shape[0]}")
+        print(f"total loss: {loss.item():.3f}, conf_loss: {conf_loss.item():.3f}, bbox_loss: {bbox_loss.item():.3f}")
         print(f"Step time: {step_time*1000:.4f} ms")
 
         if logging:
             wandb.log({
-                "loss": loss.item(),
+                "total_loss": loss.item(),
+                "confidence_loss": conf_loss.item(),
+                "bbox_loss": bbox_loss.item(),
                 "step_time_ms": step_time * 1000,
-                "batch": batch_idx
+                "batch": batch_idx,
+                "learning_rate": optim.param_groups[0]['lr']
             })
 
     if logging:
