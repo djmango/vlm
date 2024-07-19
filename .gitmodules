@@ -1,7 +1,6 @@
 [submodule "llama3"]
 	path = llama3
 	url = https://github.com/minjunes/llama3
-
 [submodule "vit-pytorch"]
 	path = vit-pytorch
-	url = https://github.com/minjunes/vit-pytorch
+	url = https://github.com/minjunes/vit-pytorch.git
