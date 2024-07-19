@@ -197,6 +197,7 @@ class NaViT(nn.Module):
         self.depth = depth
         self.mlp_dim = mlp_dim
         self.heads = heads
+        self.token_dropout_prob = token_dropout_prob
 
         if callable(token_dropout_prob):
             self.calc_token_dropout = token_dropout_prob

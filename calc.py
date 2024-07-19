@@ -9,13 +9,14 @@ import os
 
 BS = 64
 patch_size = 8
+dim_head = 64
 v = NaViT(
     image_size = 256,
     patch_size = 8,
     num_classes=1000,
     dim = 1024,
     depth = 12,
-    heads = 16,
+    heads = 2,
     mlp_dim = 2048
 )
 
@@ -30,24 +31,15 @@ def train_time(toks, gpu_flops=4e12):
     time_hr = (C / gpu_flops) / (60*60)
     return time_hr
 
-def calc_memory(img_w, img_h, patch_size):
-    num_patches = (img_w // patch_size) * (img_h // patch_size)
-    print(f'Num patches (tokens): {num_patches}')
-    patch_size_pixels = patch_size * patch_size * 3  # 3 channels for RGB
-    # Memory for patches
-    patch_memory = num_patches * patch_size_pixels * 4  # 4 bytes per float32
-    # Memory for positional embeddings
-    pos_embed_memory = num_patches * v.dim * 4
-    # Memory for attention layers
-    attention_memory = v.depth * (3 * v.dim * num_patches * 4)  # Q, K, V matrices
-    # Memory for MLP layers
-    mlp_memory = v.depth * (v.mlp_dim * num_patches * 4)
-    # Total memory in bytes
-    total_memory_bytes = patch_memory + pos_embed_memory + attention_memory + mlp_memory
-    # Convert to GB
-    total_memory_gb = total_memory_bytes / (1024 ** 3)
-    print(total_memory_gb)
-    return total_memory_gb
+def calc_inference_memory(v : NaViT, bs, seqlen, bytes=4):
+    one_tok = v.heads * v.dim * dim_head * 3 # qkv
+    total_attn = bs * seqlen * one_tok 
+    return total_attn * bytes / (1024 ** 3)
+
+def calc_model_memory():
+    total_params = sum(p.numel() for p in v.parameters())
+    memory_usage = total_params * 4 / (1024 ** 3)  # 4 bytes per parameter (fp32), convert to GB
+    return memory_usage
 
 # Print memory usage for different YouTube resolutions and calculate maximum batch size
 print("Memory usage and maximum batch size for different resolutions:")
@@ -68,7 +60,7 @@ resolutions = [
 dataset_rows = 1e6 
 for name, width, height in resolutions:
     print(f"\n{name}:")
-    memory_usage = calc_memory(width, height, 12)
+    memory_usage = calc_inference_memory(v, 1, )
     print(f"Memory usage: {memory_usage:.2f} GB")
     max_batch_size = calc_max_batch_size(memory_usage)
     print(f"Max batch size at 80GB memory: {max_batch_size}")
