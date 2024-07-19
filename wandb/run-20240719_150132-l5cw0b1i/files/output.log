@@ -1,8 +1,0 @@
-max batch tokens: 8100
-peak mem per batch: 10.6787109375 GB
-Batch creation time: 69.4642 ms
-torch.Size([3, 5501]) torch.Size([3, 4])
-Traceback (most recent call last):
-  File "/Users/minjunes/vlm/train.py", line 309, in <module>
-    bs, _, _ = out_cls.shape
-ValueError: not enough values to unpack (expected 3, got 2)

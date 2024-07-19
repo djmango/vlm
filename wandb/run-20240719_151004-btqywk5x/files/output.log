@@ -1,7 +1,0 @@
-max batch tokens: 8100
-peak mem per batch: 10.6787109375 GB
-Batch creation time: 66.1919 ms
-Traceback (most recent call last):
-  File "/Users/minjunes/vlm/train.py", line 299, in <module>
-    labels = torch.stack(label_indices, dtype=torch.long)
-TypeError: expected Tensor as element 0 in argument 0, but got list

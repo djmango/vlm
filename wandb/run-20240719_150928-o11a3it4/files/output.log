@@ -1,6 +1,0 @@
-max batch tokens: 8100
-peak mem per batch: 10.6787109375 GB
-Batch creation time: 84.4412 ms
-Traceback (most recent call last):
-  File "/Users/minjunes/vlm/train.py", line 300, in <module>
-TypeError: expected Tensor as element 0 in argument 0, but got int

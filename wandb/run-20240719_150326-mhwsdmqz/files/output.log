@@ -1,8 +1,0 @@
-max batch tokens: 8100
-peak mem per batch: 10.6787109375 GB
-Batch creation time: 79.2618 ms
-torch.Size([3, 5501]) torch.Size([3, 400])
-Traceback (most recent call last):
-  File "/Users/minjunes/vlm/train.py", line 310, in <module>
-    out_cls = out_cls.view(bs, n_bboxs, n_classes+1)
-RuntimeError: shape '[3, 100, 56]' is invalid for input of size 16503
