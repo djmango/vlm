@@ -4,3 +4,6 @@
 [submodule "vit-pytorch"]
 	path = vit-pytorch
 	url = https://github.com/minjunes/vit-pytorch.git
+[submodule "detr"]
+	path = detr
+	url = https://github.com/minjunes/detr.git
