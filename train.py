@@ -1,16 +1,19 @@
-from vit_pytorch.na_vit import NaViT
-from datasets import load_dataset
-from torch.utils.data import Dataset, DataLoader
-import torchvision.transforms as transforms
-from data import apply_bbox_to_image
-import matplotlib.pyplot as plt
-import torch.nn.functional as F
-
 import torch
 import random
 import time
 import os
 import re
+
+import torchvision.transforms as transforms
+import matplotlib.pyplot as plt
+import torch.nn.functional as F
+
+from vit_pytorch.na_vit import NaViT
+from datasets import load_dataset
+from torch.utils.data import Dataset, DataLoader
+from data import apply_bbox_to_image
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 BS = 2
 patch_size = 14
@@ -30,7 +33,7 @@ v = NaViT(
     dropout = 0.1,
     emb_dropout = 0.1,
     token_dropout_prob = 0.1
-)
+).to(device)
 
 #ds = load_dataset("biglab/webui-7k-elements")
 ds = load_dataset("biglab/webui-7kbal-elements")
@@ -65,7 +68,7 @@ class NaViTDataset(Dataset):
             # If invalid, move to the next index
             idx = (idx + 1) % len(self)
         item = self.dataset[idx]
-        image = self.rescale_image(transforms.ToTensor()(item['image']), idx)
+        image = self.rescale_image(transforms.ToTensor()(item['image']), idx).to(device)
         content_boxes = item['contentBoxes']
         key = item['key_name']
         
@@ -127,6 +130,7 @@ def get_batch(dataset):
         batch = []
         buffer = []
         current_toks = 0
+        batch_start_time = time.time()  # Start timing the batch creation
         try:
             while len(batch) < BS:
                 img, bbox, key = dataset[-1] # Always use index 0, the dataset handles progression
@@ -143,6 +147,10 @@ def get_batch(dataset):
                     batch.append(buffer)
                     break
 
+            batch_end_time = time.time()  # End timing the batch creation
+            batch_time = batch_end_time - batch_start_time
+            print(f"Batch creation time: {batch_time*1000:.4f} ms")
+
             if batch:
                 yield batch
             else:
@@ -153,7 +161,7 @@ def get_batch(dataset):
             break
 
 def display_img(img, bboxes, key):
-    img_pil = transforms.ToPILImage()(img)
+    img_pil = transforms.ToPILImage()(img.cpu())
     
     for bbox in bboxes:
         img_pil = apply_bbox_to_image(img_pil, bbox)
@@ -187,9 +195,8 @@ def loss_fn(confidence_pred, bbox_pred, confidence_target, bbox_target):
 optim = torch.optim.Adam(v.parameters(), lr=3e-4)
 
 for batch in get_batch(dataset):
-    #print(len(batch))
-    #print(batch[0][0])
-    #print(batch[0][1])
+    start_time = time.time()  # Start timing the step
+
     optim.zero_grad()  # Reset gradients at the start of each iteration
 
     batched_imgs = []
@@ -211,8 +218,8 @@ for batch in get_batch(dataset):
 
         batched_imgs.append(imgs)
 
-    confidence_target = torch.stack([torch.tensor(ct) for ct in confidence_targets]).to(dtype=dtype)
-    bbox_target = torch.stack([torch.tensor(bt) for bt in bbox_targets]).to(dtype=dtype)
+    confidence_target = torch.stack([torch.tensor(ct, device=device) for ct in confidence_targets]).to(dtype=dtype)
+    bbox_target = torch.stack([torch.tensor(bt, device=device) for bt in bbox_targets]).to(dtype=dtype)
 
     print('target shapes:')
     print(confidence_target.shape)
@@ -233,7 +240,11 @@ for batch in get_batch(dataset):
     loss.backward()
     optim.step()
 
+    end_time = time.time()  # End timing the step
+    step_time = end_time - start_time  # Calculate step time
+
     print(f"Loss: {loss.item()}")
+    print(f"Step time: {step_time*1000:.4f} ms")
 
     '''
     for img, bbox, key in batch:
