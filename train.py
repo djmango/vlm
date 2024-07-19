@@ -1,18 +1,27 @@
 import torch
-import random
 import time
 import os
+import sys
+import os
+
+detr_path = os.path.join(os.path.dirname(__file__), 'detr')
+sys.path.append(detr_path)
+
 import re
 import wandb
-
 import torchvision.transforms as transforms
-#import matplotlib.pyplot as plt
+
+from rich.progress import track
+from torchvision.ops import box_iou
+import matplotlib.pyplot as plt
 import torch.nn.functional as F
 from vit_pytorch.na_vit import NaViT
 from datasets import load_dataset
 from torch.utils.data import Dataset
 from tqdm import tqdm
-#from data import apply_bbox_to_image
+from detr.models.detr import SetCriterion 
+from detr.models.matcher import build_matcher
+from data import apply_bbox_to_image
 
 class NaViTDataset(Dataset):
     def __init__(self, dataset, patch_size, max_batch_size):
@@ -43,25 +52,19 @@ class NaViTDataset(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, idx):
-        #start_time = time.time()
         idx = self.current_idx
         self.current_idx = (self.current_idx + 1) % len(self)
         item = self.dataset[idx]
-        # 20 ms
         image = self.rescale_image(self.transform(item['image']), idx).to(device)
         
-        content_boxes = item['contentBoxes']
-        content_boxes.sort(key=lambda box: (box[1], box[0]))  # Sort by y0, then x0
+        content_boxes = [bbox for bbox in item['contentBoxes'] if bbox[2] >= bbox[0] and bbox[3] >= bbox[1]]
         key = item['key_name']
+        label = item['labels']
         
-        # Rescale bounding boxes
         scale_w, scale_h = self.get_scale_factors(item['image'].size, key)
         scaled_boxes = [self.scale_bbox(box, scale_w, scale_h) for box in content_boxes]
 
-        #end_time = time.time()
-        #elapsed_time_ms = (end_time - start_time) * 1000
-        #print(f"Image rescaling and transfer to device took {elapsed_time_ms:.2f} ms")
-        return image, scaled_boxes, key
+        return image, scaled_boxes, label
 
     def get_target_resolution(self, key):
         for pattern, resolution in self.resolution_map.items():
@@ -111,14 +114,14 @@ def get_batch(dataset):
         batch_start_time = time.time()  # Start timing the batch creation
         try:
             while len(batch) < BS:
-                img, bbox, key = dataset[-1] # Always use index 0, the dataset handles progression
+                img, bbox, label = dataset[-1] # Always use index 0, the dataset handles progression
                 img_tokens = (img.shape[1] // patch_size) * (img.shape[2] // patch_size)
                 if current_toks + img_tokens > max_batch_tokens:
                     if buffer:
                         batch.append(buffer)
                         buffer = []
                         current_toks = 0
-                buffer.append((img, bbox, key))
+                buffer.append((img, bbox, label))
                 current_toks += img_tokens
 
                 if len(batch) == BS - 1 and buffer:
@@ -137,7 +140,7 @@ def get_batch(dataset):
             if batch:
                 yield batch
             break
-'''
+
 def display_img(img, bboxes, key):
     img_pil = transforms.ToPILImage()(img.cpu())
     
@@ -152,23 +155,141 @@ def display_img(img, bboxes, key):
     ax.set_yticks([])
     # Show the plot
     plt.show()
-'''
+
+def validate(model, val_dataset, criterion, device):
+    print('validating...')
+    model.eval()
+    total_loss = 0
+    total_cls_accuracy = 0
+    total_iou_loss = 0
+    num_samples = 0
+
+    with torch.no_grad():
+        for i, batch in track(enumerate(get_batch(val_dataset)), description="Validating", total=len(val_dataset)):
+            batched_imgs = []
+            targets = []
+
+            for sample in batch:
+                imgs = []
+                for img, bboxes, labels in sample:
+                    target_dict = {}
+                    imgs.append(img)
+
+                    sampled_idxs = torch.randperm(len(bboxes))[:min(n_bboxs, len(bboxes))]
+                    
+                    sampled_bboxes = torch.tensor(bboxes)[sampled_idxs]
+                    sampled_labels = [labels[i][0] for i in sampled_idxs]
+                    
+                    bbox_target = torch.cat([sampled_bboxes, torch.zeros(n_bboxs - len(sampled_bboxes), 4)])
+                    
+                    target_dict['boxes'] = box_xyxy_to_cxcywh(bbox_target)
+                    
+                    labels = torch.tensor([cls_to_idx[label] for label in sampled_labels], dtype=torch.long)
+                    
+                    padded_labels = torch.full((n_bboxs,), n_classes, dtype=torch.long)
+                    padded_labels[:len(labels)] = labels
+                    
+                    target_dict['labels'] = padded_labels
+                    targets.append(target_dict)
+
+                batched_imgs.append(imgs)
+
+            out_cls, out_bbox = model(batched_imgs)
+
+            bs, _ = out_cls.shape
+            out_cls = out_cls.view(bs, n_bboxs, n_classes+1)
+            out_bbox = out_bbox.view(bs, n_bboxs, 4)
+
+            outs = {'pred_logits': out_cls, 'pred_boxes': out_bbox}
+
+            loss_dict = criterion(outs, targets)
+            weight_dict = criterion.weight_dict
+            losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+
+            # Calculate classification accuracy
+            pred_cls = out_cls.argmax(dim=-1)
+            target_cls = torch.stack([t['labels'] for t in targets])
+            cls_accuracy = (pred_cls == target_cls).float().mean()
+
+            # Calculate IoU loss for matched boxes
+            pred_boxes = box_cxcywh_to_xyxy(out_bbox)
+            target_boxes = torch.stack([box_cxcywh_to_xyxy(t['boxes']) for t in targets])
+            
+            # Use the matcher to find the best matches
+            indices = criterion.matcher(outs, targets)
+            
+            iou_loss = 0
+            for idx, (pred_idx, target_idx) in enumerate(indices):
+                if len(pred_idx) > 0:
+                    matched_pred_boxes = pred_boxes[idx][pred_idx]
+                    matched_target_boxes = target_boxes[idx][target_idx]
+                    iou = box_iou(matched_pred_boxes, matched_target_boxes)
+                    # mean iou loss for this sample
+                    iou_loss += (1 - iou.diag()).mean()
+            
+            total_loss += losses.item()
+            total_cls_accuracy += cls_accuracy.item()
+            total_iou_loss += iou_loss
+            num_samples += bs
+
+    avg_loss = total_loss / num_samples
+    avg_cls_accuracy = total_cls_accuracy / num_samples
+    avg_iou_loss = total_iou_loss / num_samples
+    model.train()
+    return avg_loss, avg_cls_accuracy, avg_iou_loss
+
+# Helper function to convert boxes from center-x, center-y, width, height to x1, y1, x2, y2 format
+def box_cxcywh_to_xyxy(x):
+    x_c, y_c, w, h = x.unbind(-1)
+    b = [(x_c - 0.5 * w), (y_c - 0.5 * h),
+         (x_c + 0.5 * w), (y_c + 0.5 * h)]
+    return torch.stack(b, dim=-1)
+
+# Create cls_to_idx mapping
+cls_to_idx = {cls: idx for idx, cls in enumerate(sorted({
+    'main', 'time', 'list', 'DescriptionListTerm', 'checkbox', 'LineBreak', 'Figcaption', 
+    'columnheader', 'button', 'ListMarker', 'radio', 'Canvas', 'insertion', 'Iframe', 
+    'alert', 'mark', 'generic', 'contentinfo', 'switch', 'graphics-symbol', 'separator', 
+    'emphasis', 'listitem', 'gridcell', 'figure', 'navigation', 'LayoutTable', 'region', 
+    'dialog', 'StaticText', 'menu', 'code', 'paragraph', 'img', 'LayoutTableRow', 
+    'IframePresentational', 'heading', 'complementary', 'slider', 'article', 'PluginObject', 
+    'combobox', 'HeaderAsNonLandmark', 'textbox', 'progressbar', 'FooterAsNonLandmark', 
+    'banner', 'status', 'link', 'EmbeddedObject', 'LayoutTableCell', 'strong', 'LabelText', 
+    'Section', 'row'
+}))}
+
+def one_hot_encode(idx, num_classes=55):
+    one_hot = torch.zeros(num_classes, dtype=torch.long)
+    one_hot[idx] = 1.0
+    return one_hot
+
+def box_xyxy_to_cxcywh(x):
+    x0, y0, x1, y1 = x.unbind(-1)
+    b = [(x0 + x1) / 2, (y0 + y1) / 2,
+         (x1 - x0), (y1 - y0)]
+    return torch.stack(b, dim=-1)
 
 if __name__ == '__main__':
-    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    logging = 1
+    # NaViT config
+    logging = 0
     BS = 2
     patch_size = 16
     max_img_size = 14*200 # 1920x1080
     max_batch_tokens = 1920//patch_size * 1080//patch_size
+    n_classes = 55
     n_bboxs = 100 
     dtype = torch.float32
     dim_head = 64
     n_heads = 2
     dim = 1024
-    depth = 8
+    depth = 1
+    
+    # loss config
+    EOS_CONF = 0.1
+    CLS_WEIGHT = 1.0
+    GIOU_WEIGHT = 2.0
+    L1_WEIGHT = 5.0
 
     if logging:
         wandb.login()
@@ -188,6 +309,7 @@ if __name__ == '__main__':
         image_size = max_img_size, # ?
         patch_size = patch_size,
         n_bboxs = n_bboxs,
+        n_classes = n_classes,
         dim = dim,
         heads = n_heads,
         depth = depth,
@@ -209,30 +331,13 @@ if __name__ == '__main__':
 
     #ds = load_dataset("biglab/webui-7k-elements")
     ds = load_dataset("biglab/webui-7kbal-elements")
-    # Create the dataset and dataloader
-    dataset = NaViTDataset(ds['train'], patch_size, max_batch_tokens)
-        #dataloader = DataLoader(navit_dataset, batch_size=BS, collate_fn=navit_collate_fn, shuffle=True)
-
-    def loss_fn(confidence_pred, bbox_pred, confidence_target, bbox_target):
-        confidence_loss = F.binary_cross_entropy_with_logits(confidence_pred, confidence_target)
-        
-        positive_mask = confidence_target > 0
-        '''
-        bbox_loss = generalized_box_iou_loss(
-            bbox_pred[positive_mask],
-            bbox_target[positive_mask],
-            reduction='mean',
-            eps=1e-7
-        )
-        '''
-        bbox_loss = F.smooth_l1_loss(bbox_pred[positive_mask], bbox_target[positive_mask])
-        
-        total_loss = confidence_loss + bbox_loss
-        return total_loss, confidence_loss, bbox_loss
+    train_size = int(0.9 * len(ds['train']))
+    train_dataset, val_dataset = torch.utils.data.random_split(ds['train'], [train_size, len(ds['train']) - train_size])
+    train_dataset, val_dataset = NaViTDataset(train_dataset, patch_size, max_batch_tokens), NaViTDataset(val_dataset, patch_size, max_batch_tokens)
 
     optim = torch.optim.AdamW(v.parameters(), lr=1e-4)
     # Gradient clipping
-    max_grad_norm = 10.0
+    max_grad_norm = 1.0
     def get_gradient_norm(model):
         total_norm = 0
         for p in model.parameters():
@@ -241,66 +346,111 @@ if __name__ == '__main__':
                 total_norm += param_norm.item() ** 2
         return total_norm ** 0.5
 
+    losses = ['labels', 'boxes', 'cardinality']
+    weight_dict = {'loss_ce': CLS_WEIGHT, 'loss_bbox': L1_WEIGHT, 'loss_giou': GIOU_WEIGHT}
+    matcher = build_matcher(cost_class=CLS_WEIGHT, cost_bbox=L1_WEIGHT, cost_giou=GIOU_WEIGHT)
+    criterion = SetCriterion(n_classes, matcher, weight_dict, EOS_CONF, losses)
 
-    for batch_idx, batch in enumerate(get_batch(dataset)):
-        start_time = time.time()  # Start timing the step
+    epochs = 10
+    for epoch in range(epochs):
+        imgs_processed = 0
+        epoch_time = time.time()
+        for batch_idx, batch in enumerate(get_batch(train_dataset)):
+            start_time = time.time()  # Start timing the step
 
-        optim.zero_grad()  # Reset gradients at the start of each iteration
+            optim.zero_grad()  # Reset gradients at the start of each iteration
 
-        batched_imgs = []
-        confidence_targets = []
-        bbox_targets = []
+            batched_imgs = []
+            targets = []
 
-        for sample in batch:
-            imgs = []
-            for img, bboxes, _ in sample:
-                imgs.append(img)
+            for sample in batch:
+                imgs = []
+                for img, bboxes, labels in sample:
+                    target_dict = dict()
+                    imgs.append(img)
 
-                sampled_bboxes = random.sample(bboxes, min(n_bboxs, len(bboxes)))
-                
-                confidence_target = [1] * len(sampled_bboxes) + [0] * (n_bboxs - len(sampled_bboxes))
-                confidence_targets.append(confidence_target)
-                
-                bbox_target = sampled_bboxes + [[0,0,0,0]] * (n_bboxs - len(sampled_bboxes))
-                bbox_targets.append(bbox_target)
+                    sampled_idxs = torch.randperm(len(bboxes))[:min(n_bboxs, len(bboxes))]
+                    
+                    sampled_bboxes = torch.tensor(bboxes)[sampled_idxs]
+                    sampled_labels = [labels[i][0] for i in sampled_idxs]
+                    
+                    bbox_target = torch.cat([sampled_bboxes, torch.zeros(n_bboxs - len(sampled_bboxes), 4)])
+                    
+                    target_dict['boxes'] = box_xyxy_to_cxcywh(bbox_target)
+                    
+                    # Convert string labels to indices and create a tensor of class labels
+                    labels = torch.tensor([cls_to_idx[label] for label in sampled_labels], dtype=torch.long)
+                    
+                    padded_labels = torch.full((n_bboxs,), n_classes, dtype=torch.long)  # Initialize with n_bboxes (empty class)
+                    padded_labels[:len(labels)] = labels
+                    print("label shape")
+                    print(padded_labels.shape)
+                    
+                    target_dict['labels'] = padded_labels
+                    targets.append(target_dict)
 
-            batched_imgs.append(imgs)
+                batched_imgs.append(imgs)
 
-        confidence_target = torch.stack([torch.tensor(ct, device=device) for ct in confidence_targets]).to(dtype=dtype)
-        bbox_target = torch.stack([torch.tensor(bt, device=device) for bt in bbox_targets]).to(dtype=dtype)
+            out_cls, out_bbox = v(batched_imgs)
 
-        preds = v(batched_imgs)
-        preds = preds.view(confidence_target.shape[0], n_bboxs, 5)
+            bs, _ = out_cls.shape
+            out_cls = out_cls.view(bs, n_bboxs, n_classes+1)
+            out_bbox = out_bbox.view(bs, n_bboxs, 4)
 
-        confidence_preds = preds[:, :, 0]  # Shape: (batch_size, 100)
-        bboxs_preds = preds[:, :, 1:]     # Shape: (batch_size, 100, 4)
+            # format outs for SetCriterion
+            outs = {'pred_logits': out_cls, 'pred_boxes': out_bbox}
 
-        loss, conf_loss, bbox_loss = loss_fn(confidence_preds, bboxs_preds, confidence_target, bbox_target)
-        loss.backward()
+            # 1) match ground truth boxes & cls with predicted boxes & cls, hungarian assingment
+            # 2) compute bbox (l1 + iou) and cls (crossentropy) loss
+            # is masked loss important? 
 
-        pre_clip_grad_norm = get_gradient_norm(v)
-        torch.nn.utils.clip_grad_norm_(v.parameters(), max_grad_norm)
-        post_clip_grad_norm = get_gradient_norm(v)
+            loss_dict = criterion(outs, targets)
+            weight_dict = criterion.weight_dict
+            losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 
-        print(f"Pre-clip grad norm: {pre_clip_grad_norm}, Post-clip grad norm: {post_clip_grad_norm}")
+            losses.backward()
 
-        optim.step()
+            pre_clip_grad_norm = get_gradient_norm(v)
+            torch.nn.utils.clip_grad_norm_(v.parameters(), max_grad_norm)
+            post_clip_grad_norm = get_gradient_norm(v)
+            imgs_processed += bs
+            print(f'-- step {imgs_processed}/{len(train_dataset)} --')
+            print(f"time so far: {time.time()-epoch_time:.2f} s")
+            print(f"Pre gradnorm: {pre_clip_grad_norm}\n Post gradnorm: {post_clip_grad_norm}")
 
-        end_time = time.time()  # End timing the step
-        step_time = end_time - start_time  # Calculate step time
+            optim.step()
 
-        print(f"Total imgs in batch: {confidence_target.shape[0]}")
-        print(f"total loss: {loss.item():.3f}, conf_loss: {conf_loss.item():.3f}, bbox_loss: {bbox_loss.item():.3f}")
-        print(f"Step time: {step_time*1000:.4f} ms")
+            end_time = time.time()  # End timing the step
+            step_time = end_time - start_time  # Calculate step time
+
+            for k in loss_dict:
+                print(f'{k} loss: {loss_dict[k]:.3f}')
+            print(f'total loss: {losses.item():.3f}')
+            print(f"Step time: {step_time*1000:.4f} ms")
+
+            # log batch step loss 
+            if logging:
+                log_dict = {
+                    "total_loss": losses.item(),
+                    "step_time_ms": step_time * 1000,
+                    "batch": batch_idx,
+                    "learning_rate": optim.param_groups[0]['lr']
+                }
+                for k, v in loss_dict.items():
+                    log_dict[f"{k}_loss"] = v.item()
+                wandb.log(log_dict)
+
+        # log epoch val loss
+        val_loss, val_cls_accuracy, val_iou_loss = validate(v, val_dataset, criterion, device)
+        print(f"Epoch {epoch+1}/{epochs}, Validation Loss: {val_loss:.4f}, "
+              f"Classification Accuracy: {val_cls_accuracy:.4f}, IoU Loss: {val_iou_loss:.4f}")
 
         if logging:
             wandb.log({
-                "total_loss": loss.item(),
-                "confidence_loss": conf_loss.item(),
-                "bbox_loss": bbox_loss.item(),
-                "step_time_ms": step_time * 1000,
-                "batch": batch_idx,
-                "learning_rate": optim.param_groups[0]['lr']
+                "epoch": epoch+1,
+                "val_loss": val_loss,
+                "val_cls_accuracy": val_cls_accuracy,
+                "val_iou_loss": val_iou_loss
             })
 
     if logging:

@@ -1,6 +1,3 @@
-git lfs install
-git clone https://huggingface.co/meta-llama/Meta-Llama-3-8B
+# install scipy
 
-# run download.sh in llama3 
-# https://download6.llamameta.net/*?Policy=eyJTdGF0ZW1lbnQiOlt7InVuaXF1ZV9oYXNoIjoieHBmMmFmcnUzOHd4MW9pbDAybG5lYmF6IiwiUmVzb3VyY2UiOiJodHRwczpcL1wvZG93bmxvYWQ2LmxsYW1hbWV0YS5uZXRcLyoiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3MjEzNjUyNDV9fX1dfQ__&Signature=XHFy429zCtmCwz3MIKTbOQdqCgC0XI%7E-JP-u76wMD104iZgjI8aP1H9zPcpSUuN8Y71%7EkU2hvy3pfjxyQ2eiouNtPKVV8A7xGzHL8yR6mJshAhNNmh%7E7oF0DdH76JcM4nMfyLmjEZ8hUVJQuMmrW5runx5PsHqL6ehVgSFVz2BceS5xuZv1ZxrzakVjlVUhZSvWLS1cJ2ij5TTuY3fE7%7EHCUal4HIOI1b%7EQvbuNbhcUBbe-zaq6cV31KKxqUv2TnkKCqompbNb5VDpDPeu2U77sExZZ0CbGif4QawYY9yEmzGm%7EmuOjWnqrJqXtKb6pItEA-QNYpxEooB9jk5FuLDw__&Key-Pair-Id=K15QRJLYKIFSLZ&Download-Request-ID=998185971617702
-
+# install vit-pytorch

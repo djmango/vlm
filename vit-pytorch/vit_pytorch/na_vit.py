@@ -183,8 +183,22 @@ class Transformer(nn.Module):
 
         return self.norm(x)
 
+class MLP(nn.Module):
+    """ Very simple multi-layer perceptron (also called FFN)"""
+
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers=3):
+        super().__init__()
+        self.num_layers = num_layers
+        h = [hidden_dim] * (num_layers - 1)
+        self.layers = nn.ModuleList(nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim]))
+
+    def forward(self, x):
+        for i, layer in enumerate(self.layers):
+            x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
+        return x
+
 class NaViT(nn.Module):
-    def __init__(self, *, image_size, patch_size, n_bboxs, dim, depth, heads, mlp_dim, channels = 3, dim_head = 64, dropout = 0., emb_dropout = 0., token_dropout_prob = None):
+    def __init__(self, *, image_size, patch_size, n_bboxs, n_classes, dim, depth, heads, mlp_dim, channels = 3, dim_head = 64, dropout = 0., emb_dropout = 0., token_dropout_prob = None):
         super().__init__()
         image_height, image_width = pair(image_size)
 
@@ -196,6 +210,7 @@ class NaViT(nn.Module):
         self.dim = dim
         self.depth = depth
         self.mlp_dim = mlp_dim
+        self.n_classes = n_classes
         self.heads = heads
         self.token_dropout_prob = token_dropout_prob
 
@@ -238,11 +253,14 @@ class NaViT(nn.Module):
         # output to logits
 
         self.to_latent = nn.Identity()
-
-        self.mlp_head = nn.Sequential(
+        self.class_embed = nn.Linear(dim, n_bboxs * (n_classes + 1))
+        self.bbox_embed = nn.Sequential(
             LayerNorm(dim),
-            # where each bbox prediction is [confidence, x0, y0, x1, y1]
-            nn.Linear(dim, n_bboxs * 5, bias = False)
+            nn.Linear(dim, dim, bias = False),
+            nn.ReLU(),
+            LayerNorm(dim),
+            nn.Linear(dim, n_bboxs * 4, bias = False), # where each bbox prediction is [confidence, x0, y0, x1, y1]
+            nn.ReLU()
         )
 
     @property
@@ -392,5 +410,8 @@ class NaViT(nn.Module):
 
         x = self.to_latent(x)
 
-        return self.mlp_head(x)
+        # [n_imgs, N * len(bbox)] [n_imgs, n_classes + 1]
+        out_cls = self.class_embed(x)
+        out_bbox = self.bbox_embed(x).sigmoid()
+        return out_cls, out_bbox
    

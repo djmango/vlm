@@ -1,0 +1,15 @@
+max batch tokens: 8100
+peak mem per batch: 10.6787109375 GB
+Batch creation time: 77.7440 ms
+Traceback (most recent call last):
+  File "/Users/minjunes/vlm/train.py", line 307, in <module>
+    out_cls, out_bbox = v(batched_imgs)
+  File "/Users/minjunes/miniconda3/envs/vlm/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1532, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/minjunes/miniconda3/envs/vlm/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1541, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/minjunes/vlm/vit-pytorch/vit_pytorch/na_vit.py", line 416, in forward
+    out_cls = self.class_embed(x).softmax()
+TypeError: softmax() received an invalid combination of arguments - got (), but expected one of:
+ * (int dim, torch.dtype dtype)
+ * (name dim, *, torch.dtype dtype)

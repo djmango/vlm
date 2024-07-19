@@ -143,3 +143,23 @@ def generate_descriptions_and_save_csv(split='train', num_samples=None):
 # TODO substitute 25k with 350k dataset and treat
 # each UI element as a sample
 #generate_descriptions_and_save_csv('train', num_samples=10)
+
+'''
+55
+{'main', 'time', 'list', 'DescriptionListTerm', 'checkbox', 'LineBreak', 'Figcaption', 'columnheader', 'button', 'ListMarker', 'radio', 'Canvas', 'insertion', 'Iframe', 'alert', 'mark', 'generic', 'contentinfo', 'switch', 'graphics-symbol', 'separator', 'emphasis', 'listitem', 'gridcell', 'figure', 'navigation', 'LayoutTable', 'region', 'dialog', 'StaticText', 'menu', 'code', 'paragraph', 'img', 'LayoutTableRow', 'IframePresentational', 'heading', 'complementary', 'slider', 'article', 'PluginObject', 'combobox', 'HeaderAsNonLandmark', 'textbox', 'progressbar', 'FooterAsNonLandmark', 'banner', 'status', 'link', 'EmbeddedObject', 'LayoutTableCell', 'strong', 'LabelText', 'Section', 'row'}
+'''
+
+def get_cls_labels():
+    labels = set()
+    dt = load_dataset('biglab/webui-7kbal-elements')
+    
+    for sample in dt['train']:
+        for label_list in sample['labels']:
+            if label_list:  # Check if the list is not empty
+                labels.add(label_list[0])  # Add the single label text
+    
+    return labels
+
+#labels = get_cls_labels()
+#print(len(labels))
+#print(labels)

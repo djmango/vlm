@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/Users/minjunes/vlm/train.py", line 227, in <module>
+    v = NaViT(
+TypeError: NaViT.__init__() missing 1 required keyword-only argument: 'n_classes'

@@ -1,0 +1,9 @@
+max batch tokens: 8100
+peak mem per batch: 10.6787109375 GB
+Batch creation time: 66.0579 ms
+Traceback (most recent call last):
+  File "/Users/minjunes/vlm/train.py", line 297, in <module>
+    label_indices = [cls_to_idx[label] for label in sampled_labels]
+  File "/Users/minjunes/vlm/train.py", line 297, in <listcomp>
+    label_indices = [cls_to_idx[label] for label in sampled_labels]
+TypeError: unhashable type: 'list'

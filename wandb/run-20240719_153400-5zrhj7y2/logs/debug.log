@@ -1,0 +1,40 @@
+2024-07-19 15:34:00,077 INFO    MainThread:69828 [wandb_setup.py:_flush():76] Current SDK version is 0.17.4
+2024-07-19 15:34:00,077 INFO    MainThread:69828 [wandb_setup.py:_flush():76] Configure stats pid to 69828
+2024-07-19 15:34:00,077 INFO    MainThread:69828 [wandb_setup.py:_flush():76] Loading settings from /Users/minjunes/.config/wandb/settings
+2024-07-19 15:34:00,077 INFO    MainThread:69828 [wandb_setup.py:_flush():76] Loading settings from /Users/minjunes/vlm/wandb/settings
+2024-07-19 15:34:00,077 INFO    MainThread:69828 [wandb_setup.py:_flush():76] Loading settings from environment variables: {}
+2024-07-19 15:34:00,077 INFO    MainThread:69828 [wandb_setup.py:_flush():76] Inferring run settings from compute environment: {'program_relpath': 'train.py', 'program_abspath': '/Users/minjunes/vlm/train.py', 'program': '/Users/minjunes/vlm/train.py'}
+2024-07-19 15:34:00,078 INFO    MainThread:69828 [wandb_setup.py:_flush():76] Applying login settings: {}
+2024-07-19 15:34:00,078 INFO    MainThread:69828 [wandb_setup.py:_flush():76] Applying login settings: {}
+2024-07-19 15:34:00,078 INFO    MainThread:69828 [wandb_init.py:_log_setup():529] Logging user logs to /Users/minjunes/vlm/wandb/run-20240719_153400-5zrhj7y2/logs/debug.log
+2024-07-19 15:34:00,078 INFO    MainThread:69828 [wandb_init.py:_log_setup():530] Logging internal logs to /Users/minjunes/vlm/wandb/run-20240719_153400-5zrhj7y2/logs/debug-internal.log
+2024-07-19 15:34:00,078 INFO    MainThread:69828 [wandb_init.py:init():569] calling init triggers
+2024-07-19 15:34:00,078 INFO    MainThread:69828 [wandb_init.py:init():576] wandb.init called with sweep_config: {}
+config: {'batch_size': 2, 'patch_size': 16, 'max_img_size': 2800, 'max_batch_tokens': 8100, 'n_bboxs': 100, 'dim_head': 64, 'n_heads': 2, 'dim': 1024, 'depth': 1}
+2024-07-19 15:34:00,078 INFO    MainThread:69828 [wandb_init.py:init():619] starting backend
+2024-07-19 15:34:00,078 INFO    MainThread:69828 [wandb_init.py:init():623] setting up manager
+2024-07-19 15:34:00,080 INFO    MainThread:69828 [backend.py:_multiprocessing_setup():105] multiprocessing start_methods=spawn,fork,forkserver, using: spawn
+2024-07-19 15:34:00,083 INFO    MainThread:69828 [wandb_init.py:init():631] backend started and connected
+2024-07-19 15:34:00,090 INFO    MainThread:69828 [wandb_init.py:init():720] updated telemetry
+2024-07-19 15:34:00,122 INFO    MainThread:69828 [wandb_init.py:init():753] communicating run to backend with 90.0 second timeout
+2024-07-19 15:34:00,601 INFO    MainThread:69828 [wandb_run.py:_on_init():2402] communicating current version
+2024-07-19 15:34:01,172 INFO    MainThread:69828 [wandb_run.py:_on_init():2411] got version response upgrade_message: "wandb version 0.17.5 is available!  To upgrade, please run:\n $ pip install wandb --upgrade"
+
+2024-07-19 15:34:01,173 INFO    MainThread:69828 [wandb_init.py:init():804] starting run threads in backend
+2024-07-19 15:34:01,841 WARNING MainThread:69828 [wandb_init.py:init():1185] interrupted
+Traceback (most recent call last):
+  File "/Users/minjunes/miniconda3/envs/vlm/lib/python3.10/site-packages/wandb/sdk/wandb_init.py", line 1181, in init
+    return wi.init()
+  File "/Users/minjunes/miniconda3/envs/vlm/lib/python3.10/site-packages/wandb/sdk/wandb_init.py", line 817, in init
+    run_start_result = run_start_handle.wait(timeout=30)
+  File "/Users/minjunes/miniconda3/envs/vlm/lib/python3.10/site-packages/wandb/sdk/lib/mailbox.py", line 283, in wait
+    found, abandoned = self._slot._get_and_clear(timeout=wait_timeout)
+  File "/Users/minjunes/miniconda3/envs/vlm/lib/python3.10/site-packages/wandb/sdk/lib/mailbox.py", line 130, in _get_and_clear
+    if self._wait(timeout=timeout):
+  File "/Users/minjunes/miniconda3/envs/vlm/lib/python3.10/site-packages/wandb/sdk/lib/mailbox.py", line 126, in _wait
+    return self._event.wait(timeout=timeout)
+  File "/Users/minjunes/miniconda3/envs/vlm/lib/python3.10/threading.py", line 607, in wait
+    signaled = self._cond.wait(timeout)
+  File "/Users/minjunes/miniconda3/envs/vlm/lib/python3.10/threading.py", line 324, in wait
+    gotit = waiter.acquire(True, timeout)
+KeyboardInterrupt

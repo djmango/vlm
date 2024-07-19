@@ -1,0 +1,49 @@
+{
+    "os": "macOS-14.4-arm64-arm-64bit",
+    "python": "3.10.14",
+    "heartbeatAt": "2024-07-19T22:03:00.477553",
+    "startedAt": "2024-07-19T22:02:59.628966",
+    "docker": null,
+    "cuda": null,
+    "args": [],
+    "state": "running",
+    "program": "/Users/minjunes/vlm/train.py",
+    "codePathLocal": "train.py",
+    "codePath": "train.py",
+    "git": {
+        "remote": "https://github.com/InvisibilityInc/vlm.git",
+        "commit": "378eb7870037a5af33ba1e087443b26ad7197e6a"
+    },
+    "email": "minjune@i.inc",
+    "root": "/Users/minjunes/vlm",
+    "host": "minjunes-mbp-2.lan",
+    "username": "minjunes",
+    "executable": "/Users/minjunes/miniconda3/envs/vlm/bin/python3",
+    "cpu_count": 14,
+    "cpu_count_logical": 14,
+    "cpu_freq": {
+        "current": 4056,
+        "min": 1020,
+        "max": 4056
+    },
+    "cpu_freq_per_core": [
+        {
+            "current": 4056,
+            "min": 1020,
+            "max": 4056
+        }
+    ],
+    "disk": {
+        "/": {
+            "total": 926.3517189025879,
+            "used": 12.546344757080078
+        }
+    },
+    "gpuapple": {
+        "type": "Apple M3 Max",
+        "vendor": "sppci_vendor_Apple"
+    },
+    "memory": {
+        "total": 36.0
+    }
+}
