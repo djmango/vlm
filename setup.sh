@@ -25,5 +25,5 @@ done < .gitmodules
 
 echo "Sobumodule setup complete."
 
-pip install scipy
+pip install scipy deepspeed
 
