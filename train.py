@@ -349,7 +349,7 @@ if __name__ == '__main__':
     losses = ['labels', 'boxes', 'cardinality']
     weight_dict = {'loss_ce': CLS_WEIGHT, 'loss_bbox': L1_WEIGHT, 'loss_giou': GIOU_WEIGHT}
     matcher = build_matcher(cost_class=CLS_WEIGHT, cost_bbox=L1_WEIGHT, cost_giou=GIOU_WEIGHT)
-    criterion = SetCriterion(n_classes, matcher, weight_dict, EOS_CONF, losses)
+    criterion = SetCriterion(n_classes, matcher, weight_dict, EOS_CONF, losses).to(device)
 
     epochs = 10
     for epoch in range(epochs):
@@ -367,21 +367,21 @@ if __name__ == '__main__':
                 imgs = []
                 for img, bboxes, labels in sample:
                     target_dict = dict()
-                    imgs.append(img)
+                    imgs.append(img.to(device))
 
                     sampled_idxs = torch.randperm(len(bboxes))[:min(n_bboxs, len(bboxes))]
                     
-                    sampled_bboxes = torch.tensor(bboxes)[sampled_idxs]
+                    sampled_bboxes = torch.tensor(bboxes, device=device)[sampled_idxs]
                     sampled_labels = [labels[i][0] for i in sampled_idxs]
                     
-                    bbox_target = torch.cat([sampled_bboxes, torch.zeros(n_bboxs - len(sampled_bboxes), 4)])
+                    bbox_target = torch.cat([sampled_bboxes, torch.zeros(n_bboxs - len(sampled_bboxes), 4, device=device)])
                     
                     target_dict['boxes'] = box_xyxy_to_cxcywh(bbox_target)
                     
                     # Convert string labels to indices and create a tensor of class labels
-                    labels = torch.tensor([cls_to_idx[label] for label in sampled_labels], dtype=torch.long)
+                    labels = torch.tensor([cls_to_idx[label] for label in sampled_labels], dtype=torch.long, device=device)
                     
-                    padded_labels = torch.full((n_bboxs,), n_classes, dtype=torch.long)  # Initialize with n_bboxes (empty class)
+                    padded_labels = torch.full((n_bboxs,), n_classes, dtype=torch.long, device=device)  # Initialize with n_bboxes (empty class)
                     padded_labels[:len(labels)] = labels
                     print("label shape")
                     print(padded_labels.shape)
@@ -455,4 +455,3 @@ if __name__ == '__main__':
 
     if logging:
         wandb.finish()
-
