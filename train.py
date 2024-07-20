@@ -283,7 +283,7 @@ if __name__ == '__main__':
     dim_head = 64
     n_heads = 2
     dim = 1024
-    depth = 1
+    depth = 8
     
     # loss config
     EOS_CONF = 0.1
@@ -383,8 +383,6 @@ if __name__ == '__main__':
                     
                     padded_labels = torch.full((n_bboxs,), n_classes, dtype=torch.long, device=device)  # Initialize with n_bboxes (empty class)
                     padded_labels[:len(labels)] = labels
-                    print("label shape")
-                    print(padded_labels.shape)
                     
                     target_dict['labels'] = padded_labels
                     targets.append(target_dict)
