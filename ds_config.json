@@ -18,12 +18,8 @@
         "warmup_num_steps": 1000
       }
     },
-    "precision": "fp32",
-    "fp16": {
-      "enabled": false
-    },
     "bf16": {
-      "enabled": false
+      "enabled": true
     },
     "zero_optimization": {
       "stage": 2,

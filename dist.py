@@ -277,8 +277,7 @@ def main():
     dim_head = 64
     n_heads = 2
     dim = 1024
-    depth = 16
-    
+    depth = 4
     # loss config
     EOS_CONF = 0.1
     CLS_WEIGHT = 1.0
@@ -288,7 +287,7 @@ def main():
     if logging:
         wandb.login()
         wandb.init(project="NaViT_training", config={
-            "batch_size": BS,
+            "batch_size": 32,
             "patch_size": patch_size,
             "max_img_size": max_img_size,
             "max_batch_tokens": max_batch_tokens,
