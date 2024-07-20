@@ -25,5 +25,14 @@ done < .gitmodules
 
 echo "Sobumodule setup complete."
 
-pip install scipy deepspeed
+pip install -U Pillow
+
+pip install scipy wandb datasets nvitop deepspeed matplotlib python-dotenv
+
+# Set the environment variable for Hugging Face datasets cache
+export HF_DATASETS_CACHE="/workspace/cache"
+
+echo "HF_DATASETS_CACHE set to /workspace/cache"
+
+
 

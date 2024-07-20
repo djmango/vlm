@@ -8,6 +8,9 @@ import torchvision.transforms as transforms
 import deepspeed
 import argparse
 
+detr_path = os.path.join(os.path.dirname(__file__), 'detr')
+sys.path.append(detr_path)
+
 from torchvision.ops import box_iou
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
@@ -19,8 +22,7 @@ from detr.models.detr import SetCriterion
 from detr.models.matcher import build_matcher
 from data import apply_bbox_to_image
 
-detr_path = os.path.join(os.path.dirname(__file__), 'detr')
-sys.path.append(detr_path)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class NaViTDataset(Dataset):
     def __init__(self, dataset, patch_size, max_batch_size):
@@ -149,7 +151,8 @@ def display_img(img, bboxes, key):
     ax.set_yticks([])
     plt.show()
 
-def validate(model_engine, val_dataset, criterion, n_bboxs, n_classes):
+# model_engine, val_dataset, criterion, device, n_bboxs, n_classes
+def validate(model_engine, val_dataset, criterion, device, n_bboxs, n_classes, BS, patch_size, max_batch_tokens):
     print('validating...')
     model_engine.eval()
     total_loss = 0
@@ -158,28 +161,28 @@ def validate(model_engine, val_dataset, criterion, n_bboxs, n_classes):
     num_samples = 0
 
     with torch.no_grad():
-        for i, batch in enumerate(get_batch(val_dataset)):
+        for i, batch in enumerate(get_batch(val_dataset, BS, patch_size, max_batch_tokens)):
             batched_imgs = []
             targets = []
 
             for sample in batch:
                 imgs = []
                 for img, bboxes, labels in sample:
-                    target_dict = {}
-                    imgs.append(img)
+                    target_dict = dict()
+                    imgs.append(img.to(device))
 
                     sampled_idxs = torch.randperm(len(bboxes))[:min(n_bboxs, len(bboxes))]
                     
-                    sampled_bboxes = torch.tensor(bboxes)[sampled_idxs]
+                    sampled_bboxes = torch.tensor(bboxes, device=device)[sampled_idxs]
                     sampled_labels = [labels[i][0] for i in sampled_idxs]
                     
-                    bbox_target = torch.cat([sampled_bboxes, torch.zeros(n_bboxs - len(sampled_bboxes), 4)])
+                    bbox_target = torch.cat([sampled_bboxes, torch.zeros(n_bboxs - len(sampled_bboxes), 4, device=device)])
                     
                     target_dict['boxes'] = box_xyxy_to_cxcywh(bbox_target)
                     
-                    labels = torch.tensor([cls_to_idx[label] for label in sampled_labels], dtype=torch.long)
+                    labels = torch.tensor([cls_to_idx[label] for label in sampled_labels], dtype=torch.long, device=device)
                     
-                    padded_labels = torch.full((n_bboxs,), n_classes, dtype=torch.long)
+                    padded_labels = torch.full((n_bboxs,), n_classes, dtype=torch.long, device=device)
                     padded_labels[:len(labels)] = labels
                     
                     target_dict['labels'] = padded_labels
@@ -227,11 +230,7 @@ def validate(model_engine, val_dataset, criterion, n_bboxs, n_classes):
     model_engine.train()
     return avg_loss, avg_cls_accuracy, avg_iou_loss
 
-def box_cxcywh_to_xyxy(x):
-    x_c, y_c, w, h = x.unbind(-1)
-    b = [(x_c - 0.5 * w), (y_c - 0.5 * h),
-         (x_c + 0.5 * w), (y_c + 0.5 * h)]
-    return torch.stack(b, dim=-1)
+
 
 cls_to_idx = {cls: idx for idx, cls in enumerate(sorted({
     'main', 'time', 'list', 'DescriptionListTerm', 'checkbox', 'LineBreak', 'Figcaption', 
@@ -245,39 +244,48 @@ cls_to_idx = {cls: idx for idx, cls in enumerate(sorted({
     'Section', 'row'
 }))}
 
-def one_hot_encode(idx, num_classes=55):
-    one_hot = torch.zeros(num_classes, dtype=torch.long)
-    one_hot[idx] = 1.0
-    return one_hot
+def box_cxcywh_to_xyxy(x):
+    x_c, y_c, w, h = x.unbind(-1)
+    b = [(x_c - 0.5 * w), (y_c - 0.5 * h),
+         (x_c + 0.5 * w), (y_c + 0.5 * h)]
+    return torch.stack(b, dim=-1).to(dtype=x.dtype)
 
 def box_xyxy_to_cxcywh(x):
     x0, y0, x1, y1 = x.unbind(-1)
     b = [(x0 + x1) / 2, (y0 + y1) / 2,
          (x1 - x0), (y1 - y0)]
-    return torch.stack(b, dim=-1)
+    return torch.stack(b, dim=-1).to(dtype=x.dtype)
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--deepspeed', action='store_true')
+    parser.add_argument('--deepspeed_config', type=str, default=None)
+    parser.add_argument('--deepscale', action='store_true')
+    parser.add_argument('--deepscale_config', type=str, default=None)
+    # Add the following line to accept the local_rank argument
+    parser.add_argument('--local_rank', type=int, default=-1)
+    return parser.parse_args()
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser = deepspeed.add_config_arguments(parser)
-    args = parser.parse_args()
+    global BS, patch_size, max_batch_tokens
+    args = parse_args() 
 
     deepspeed.init_distributed()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # NaViT config
-    logging = 1
-    BS = 2
+    logging = args.local_rank == 0
+    BS = 6
     patch_size = 16
     max_img_size = 14*200 # 1920x1080
     max_batch_tokens = 1920//patch_size * 1080//patch_size
     n_classes = 55
-    n_bboxs = 100 
+    n_bboxs = 100
     dtype = torch.float32
     dim_head = 64
     n_heads = 2
     dim = 1024
-    depth = 4
+    depth = 8
     # loss config
     EOS_CONF = 0.1
     CLS_WEIGHT = 1.0
@@ -285,9 +293,9 @@ def main():
     L1_WEIGHT = 5.0
 
     if logging:
-        wandb.login()
+        wandb.login(key=os.getenv("WANDB_API_KEY"))
         wandb.init(project="NaViT_training", config={
-            "batch_size": 32,
+            "batch_size": 64,
             "patch_size": patch_size,
             "max_img_size": max_img_size,
             "max_batch_tokens": max_batch_tokens,
@@ -310,9 +318,9 @@ def main():
         dropout = 0.1,
         emb_dropout = 0.1,
         token_dropout_prob = 0.1
-    )
+    ).to(device)
 
-    ds = load_dataset("biglab/webui-7kbal-elements")
+    ds = load_dataset("biglab/webui-70k-elements", cache_dir="/workspace/cache")
     train_size = int(0.9 * len(ds['train']))
     train_dataset, val_dataset = torch.utils.data.random_split(ds['train'], [train_size, len(ds['train']) - train_size])
     train_dataset = NaViTDataset(train_dataset, patch_size, max_batch_tokens)
@@ -322,8 +330,7 @@ def main():
     model_engine, optimizer, _, _ = deepspeed.initialize(
         args=args,
         model=vit,
-        model_parameters=vit.parameters(),
-        config=args.deepspeed_config
+        model_parameters=vit.parameters()
     )
 
     losses = ['labels', 'boxes', 'cardinality']
@@ -340,6 +347,7 @@ def main():
         epoch_time = time.time()
 
         for batch_idx, batch in enumerate(get_batch(train_dataset, BS, patch_size, max_batch_tokens)):
+            if batch_idx > 0: break
             start_time = time.time()
 
             batched_imgs = []
@@ -408,7 +416,11 @@ def main():
                     log_dict[f"{k}_loss"] = v.item()
                 wandb.log(log_dict)
 
-        val_loss, val_cls_accuracy, val_iou_loss = validate(model_engine, val_dataset, criterion, device, n_bboxs, n_classes)
+        val_loss, val_cls_accuracy, val_iou_loss = validate(
+            model_engine, val_dataset, criterion, 
+            device, n_bboxs, n_classes, BS,
+            patch_size, max_batch_tokens
+        )
         print(f"Epoch {epoch+1}/{epochs}, Validation Loss: {val_loss:.4f}, "
               f"Classification Accuracy: {val_cls_accuracy:.4f}, IoU Loss: {val_iou_loss:.4f}")
 
@@ -419,6 +431,11 @@ def main():
                 "val_cls_accuracy": val_cls_accuracy,
                 "val_iou_loss": val_iou_loss
             })
+        
+        # Save model at the end of each epoch
+        save_path = f'vit_checkpoint_epoch_{epoch+1}.pt'
+        model_engine.save_checkpoint(save_path)
+        print(f"Model saved to {save_path}")
 
     if logging:
         wandb.finish()
