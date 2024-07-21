@@ -280,7 +280,7 @@ def main():
     patch_size = 16
     max_img_size = 14*200 # 1920x1080
     max_batch_tokens = 1920//patch_size * 1080//patch_size
-    n_classes = 55
+    n_classes = len(cls_to_idx)
     n_bboxs = 100
     dtype = torch.float32
     dim_head = 64
@@ -339,8 +339,7 @@ def main():
     matcher = build_matcher(cost_class=CLS_WEIGHT, cost_bbox=L1_WEIGHT, cost_giou=GIOU_WEIGHT)
     criterion = SetCriterion(n_classes, matcher, weight_dict, EOS_CONF, losses).to(device)
 
-    epochs = 10
-
+    epochs = 1000
     for epoch in range(epochs):
 
         model_engine.train()
@@ -416,7 +415,7 @@ def main():
                 for k, v in loss_dict.items():
                     log_dict[f"{k}_loss"] = v.item()
                 wandb.log(log_dict)
-
+        '''
         val_loss, val_cls_accuracy, val_iou_loss = validate(
             model_engine, val_dataset, criterion, 
             device, n_bboxs, n_classes, BS,
@@ -437,7 +436,7 @@ def main():
         save_path = f'vit_checkpoint_epoch_{epoch+1}.pt'
         model_engine.save_checkpoint(save_path)
         print(f"Model saved to {save_path}")
-
+        '''
     if logging:
         wandb.finish()
 
