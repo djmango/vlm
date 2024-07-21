@@ -230,19 +230,20 @@ def validate(model_engine, val_dataset, criterion, device, n_bboxs, n_classes, B
     model_engine.train()
     return avg_loss, avg_cls_accuracy, avg_iou_loss
 
-
-
 cls_to_idx = {cls: idx for idx, cls in enumerate(sorted({
-    'main', 'time', 'list', 'DescriptionListTerm', 'checkbox', 'LineBreak', 'Figcaption', 
-    'columnheader', 'button', 'ListMarker', 'radio', 'Canvas', 'insertion', 'Iframe', 
-    'alert', 'mark', 'generic', 'contentinfo', 'switch', 'graphics-symbol', 'separator', 
-    'emphasis', 'listitem', 'gridcell', 'figure', 'navigation', 'LayoutTable', 'region', 
-    'dialog', 'StaticText', 'menu', 'code', 'paragraph', 'img', 'LayoutTableRow', 
-    'IframePresentational', 'heading', 'complementary', 'slider', 'article', 'PluginObject', 
-    'combobox', 'HeaderAsNonLandmark', 'textbox', 'progressbar', 'FooterAsNonLandmark', 
-    'banner', 'status', 'link', 'EmbeddedObject', 'LayoutTableCell', 'strong', 'LabelText', 
-    'Section', 'row'
+    'rowheader', 'doc-subtitle', 'application', 'table', 'contentinfo', 'columnheader', 'mark', 'menu', 'group', 'status', 
+    'HeaderAsNonLandmark', 'link', 'DisclosureTriangle', 'PluginObject', 'Canvas', 'heading', 'menuitem', 'rowgroup', 
+    'definition', 'document', 'option', 'DescriptionList', 'progressbar', 'Iframe', 'blockquote', 'toolbar', 'banner', 
+    'list', 'emphasis', 'insertion', 'row', 'code', 'listitem', 'deletion', 'StaticText', 'Figcaption', 'LayoutTableCell', 
+    'gridcell', 'LayoutTable', 'region', 'tablist', 'combobox', 'form', 'separator', 'Section', 'RootWebArea', 'superscript', 
+    'slider', 'EmbeddedObject', 'button', 'Pre', 'article', 'LabelText', 'alert', 'tab', 'generic', 'IframePresentational', 
+    'FooterAsNonLandmark', 'DescriptionListTerm', 'img', 'DescriptionListDetail', 'listbox', 'tabpanel', 'figure', 'Legend', 
+    'radio', 'switch', 'log', 'navigation', 'paragraph', 'dialog', 'LineBreak', 'graphics-symbol', 'menubar', 'treeitem', 
+    'note', 'LayoutTableRow', 'main', 'ListMarker', 'Ruby', 'complementary', 'subscript', 'Abbr', 'search', 'checkbox', 
+    'textbox', 'time', 'strong'
 }))}
+
+assert len(cls_to_idx) == 88, f"Expected 88 classes, but got {len(cls_to_idx)}"
 
 def box_cxcywh_to_xyxy(x):
     x_c, y_c, w, h = x.unbind(-1)

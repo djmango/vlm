@@ -34,5 +34,5 @@ export HF_DATASETS_CACHE="/workspace/cache"
 
 echo "HF_DATASETS_CACHE set to /workspace/cache"
 
-
+deepspeed --num_gpus=4 dist.py --deepspeed --deepspeed_config ds_config.json
 

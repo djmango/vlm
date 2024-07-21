@@ -10,6 +10,9 @@ from tqdm import tqdm
 from datasets import load_dataset
 from matplotlib.patches import Rectangle
 from dotenv import load_dotenv
+from datasets import load_dataset
+from multiprocessing import Pool, freeze_support
+from tqdm import tqdm
 
 load_dotenv()
 
@@ -144,22 +147,33 @@ def generate_descriptions_and_save_csv(split='train', num_samples=None):
 # each UI element as a sample
 #generate_descriptions_and_save_csv('train', num_samples=10)
 
-'''
-55
-{'main', 'time', 'list', 'DescriptionListTerm', 'checkbox', 'LineBreak', 'Figcaption', 'columnheader', 'button', 'ListMarker', 'radio', 'Canvas', 'insertion', 'Iframe', 'alert', 'mark', 'generic', 'contentinfo', 'switch', 'graphics-symbol', 'separator', 'emphasis', 'listitem', 'gridcell', 'figure', 'navigation', 'LayoutTable', 'region', 'dialog', 'StaticText', 'menu', 'code', 'paragraph', 'img', 'LayoutTableRow', 'IframePresentational', 'heading', 'complementary', 'slider', 'article', 'PluginObject', 'combobox', 'HeaderAsNonLandmark', 'textbox', 'progressbar', 'FooterAsNonLandmark', 'banner', 'status', 'link', 'EmbeddedObject', 'LayoutTableCell', 'strong', 'LabelText', 'Section', 'row'}
-'''
-
-def get_cls_labels():
+def process_sample(sample):
     labels = set()
-    dt = load_dataset('biglab/webui-7kbal-elements')
-    
-    for sample in dt['train']:
-        for label_list in sample['labels']:
-            if label_list:  # Check if the list is not empty
-                labels.add(label_list[0])  # Add the single label text
-    
+    for label_list in sample['labels']:
+        if label_list:  # Check if the list is not empty
+            labels.add(label_list[0])  # Add the single label text
     return labels
 
-#labels = get_cls_labels()
-#print(len(labels))
-#print(labels)
+def process_dataset(dataset):
+    all_labels = set()
+    for sample in tqdm(dataset['train'], desc="Processing samples", unit="sample"):
+        all_labels.update(process_sample(sample))
+    return all_labels
+
+def get_cls_labels():
+    dt_350k = load_dataset('biglab/webui-350k-elements')
+    dt_70k = load_dataset('biglab/webui-70k-elements')
+    datasets = [dt_350k, dt_70k]
+    
+    with Pool() as pool:
+        results = pool.map(process_dataset, datasets)
+    
+    all_labels = set().union(*results)
+    return all_labels
+
+if __name__ == '__main__':
+    freeze_support()
+    labels = get_cls_labels()
+    print(len(labels))
+    print(labels)
+
