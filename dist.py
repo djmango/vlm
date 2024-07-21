@@ -347,7 +347,7 @@ def main():
         epoch_time = time.time()
 
         for batch_idx, batch in enumerate(get_batch(train_dataset, BS, patch_size, max_batch_tokens)):
-            if batch_idx > 0: break
+            if batch_idx > 10: break
             start_time = time.time()
 
             batched_imgs = []
