@@ -45,6 +45,17 @@ def apply_bbox_to_image(image, bbox):
     draw = ImageDraw.Draw(image)
     x1, y1, x2, y2 = tuple(bbox)
     draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
+    
+    # Print shape and coordinates of bbox
+    '''
+    print("Image Shape:", image.size)
+    print("Bounding Box Coordinates:")
+    print("  x1:", x1)
+    print("  y1:", y1)
+    print("  x2:", x2)
+    print("  y2:", y2)
+    input()
+    '''
     return image
 
 def get_description_from_claude(image):
