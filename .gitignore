@@ -14,5 +14,7 @@ __pycache__/
 # Checkpoint directory
 /ckpt/
 
+/vis/
+
 # wandb logs
 /wandb/
