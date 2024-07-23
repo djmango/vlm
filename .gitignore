@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 *.pyd
 *.env
+*.pt
 
 # macOS system files
 .DS_Store
@@ -20,3 +21,6 @@ __pycache__/
 /wandb/
 
 /vis/
+
+/cache/
+
