@@ -12,6 +12,7 @@ vit_path = os.path.join(os.path.dirname(__file__), 'vit-pytorch')
 sys.path.append(detr_path)
 sys.path.append(vit_path)
 
+from torchinfo import summary
 from torchvision.ops import box_iou
 from vit_pytorch.na_vit import NaViT
 from datasets import load_dataset
@@ -396,7 +397,7 @@ def main():
     val = 0
     BS = 4
     patch_size = 28
-    max_img_size = patch_size*200 # 1920x1080
+    max_img_size = patch_size*200 # Adjusted to be divisible by patch_size (28)
     max_batch_tokens = 1920//patch_size * 1080//patch_size
     n_classes = len(cls_to_idx)
     n_bboxs = 100
@@ -435,16 +436,16 @@ def main():
         dim = dim,
         heads = n_heads,
         depth = depth,
+        channels = 3,
         mlp_dim = 2048,
         dropout = 0.1,
         emb_dropout = 0.1,
         token_dropout_prob = 0.1
     ).to(device)
 
-    # Set a fixed seed for reproducibility
     torch.manual_seed(42)
     
-    ds = load_dataset("biglab/webui-7k-elements")
+    ds = load_dataset("biglab/webui-70k-elements", cache_dir='/workspace/cache')
     train_size = int(0.9 * len(ds['train']))
     train_dataset, val_dataset = torch.utils.data.random_split(
         ds['train'], 
@@ -458,7 +459,7 @@ def main():
     print("Fetching 10 batches from train_dataset:")
     batches = []
     batch_generator = get_batch(train_dataset, BS, patch_size, max_batch_tokens)
-    for i in range(10):
+    for i in range(1):
         try:
             batch = next(batch_generator)
             batches.append(batch)
@@ -495,6 +496,7 @@ def main():
             for sample in batch:
                 imgs = []
                 for img, bboxes, labels in sample:
+                    if i > 0: break
                     target_dict = dict()
                     imgs.append(img.to(device))
 
@@ -522,6 +524,21 @@ def main():
                     img_sizes.append(img_hw)
 
                 batched_imgs.append(imgs)
+            # Ensure all tensors are on the same device
+            dev = next(vit.parameters()).device
+            
+            # Create a dummy input on the correct device
+            dummy_input = [[torch.randn(3, 1904, 1064, device=dev)] for _ in range(2)]  # 4 images of size 3x1904x1064
+
+            # Use the dummy input for the summary
+            try:
+                summary(vit, input_data=[dummy_input], verbose=1, depth=depth)
+            except RuntimeError as e:
+                print(f"Error during summary: {e}")
+                print("Ensure all model parameters and inputs are on the same device.")
+
+            input() 
+            # Remove the input() call as it's not necessary for debugging this issue
 
             out_cls, out_bbox = vit(batched_imgs)
 
