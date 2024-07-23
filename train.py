@@ -4,6 +4,7 @@ import os
 import sys
 import re
 import wandb
+import random
 import torchvision.transforms as transforms
 
 detr_path = os.path.join(os.path.dirname(__file__), 'detr')
@@ -18,15 +19,29 @@ from torch.utils.data import Dataset
 from detr.models.detr import SetCriterion 
 from detr.models.matcher import build_matcher
 from data import apply_bbox_to_image
+from typing import List
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def validbox(box, img_size):
-    w,h = img_size
+# filtering rules
+'''
+    blacklist classes that make think bboxes
+    blacklist meaningless classes for layout, no content
+    only sufficiently fat bboxes
+'''
+
+def validbox(box, bounds):
+    left,bottom,right,top = bounds
     x0,y0,x1,y1 = box
-    if (x0 >= 0) and (y0 >= 0) and (x1 >= x0) and (y1 >= y0) and (x1 <= w) and (y1 <= h): 
-        return 1
+    if (x0 >= left) and (y0 >= bottom) and (x1 >= x0) and (y1 >= y0) and (x1 <= right) and (y1 <= top):
+        if (x1 - x0 >= 15) and (y1 - y0 >= 15):
+            return 1
     return 0
+
+def validlabel(labels: List[str]):
+    if len(labels) > 2:
+        return False
+    return not any(label in blacklist for label in labels)
 
 class NaViTDataset(Dataset):
     def __init__(self, dataset, patch_size, max_batch_size):
@@ -38,16 +53,13 @@ class NaViTDataset(Dataset):
             'iPad-Pro': (1138, 1518),
             'iPhone-13 Pro': (650, 1407)
         }
-
         def ensure_rgb(image):
             if image.shape[0] == 4:  # If the image has 4 channels (RGBA)
                 return image[:3, :, :]  # Return only the first 3 channels (RGB)
             return image
-
         self.transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Lambda(ensure_rgb),
-            #transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         self.to_tensor = transforms.ToTensor()
         self.current_idx = 0
@@ -56,24 +68,26 @@ class NaViTDataset(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, idx):
+        # skip iPhone-13 Pro
         while True:
             idx = self.current_idx
             self.current_idx = (self.current_idx + 1) % len(self)
             item = self.dataset[idx]
-            
             if item['key_name'] != 'iPhone-13 Pro':
                 break
-        
-        image = self.rescale_image(self.transform(item['image']), idx).to(device)
-        
+            
+        image = self.transform(item['image'])
         key = item['key_name']
-        content_boxes = [bbox for bbox in item['contentBoxes'] if validbox(bbox, image.shape[1:])]
-        label = item['labels']
-        
-        scale_w, scale_h = self.get_scale_factors(item['image'].size, key)
-        scaled_boxes = [self.scale_bbox(box, scale_w, scale_h) for box in content_boxes]
+        labels = item['labels']
+        bboxs = item['contentBoxes']  # Add this line to define bboxs
 
-        return image, scaled_boxes, label
+        scale_w, scale_h = self.get_scale_factors(item['image'].size, key)
+        scaled_boxes = [self.scale_bbox(box, scale_w, scale_h) for box in bboxs]
+        image, bboxs = self.resize_and_augment(image, key, scaled_boxes, labels)
+
+        display_img(image, bboxs, labels=labels, desc=f'img_{idx}')
+
+        return image, bboxs, labels
 
     def get_target_resolution(self, key):
         for pattern, resolution in self.resolution_map.items():
@@ -88,19 +102,43 @@ class NaViTDataset(Dataset):
 
     def get_scale_factors(self, original_size, key):
         target_w, target_h = self.get_target_resolution(key)
-        wildcard = 1.5 if key == 'iPhone-13 Pro' else (2 if key == 'iPad-Pro' else 1)
+        wildcard = 2 if key == 'iPad-Pro' else 1
         return target_w / original_size[0] * wildcard, target_h / original_size[1] * wildcard
 
-    def rescale_image(self, img, idx):
-        c, h, w = img.shape
-        key = self.dataset[idx]['key_name']
+    def resize_and_augment(self, img, key, bboxs, labels):
         target_w, target_h = self.get_target_resolution(key)
-        
-        resized_img = transforms.Resize((target_h, target_w))(img)
-        
-        new_h = (target_h // self.patch_size) * self.patch_size
-        new_w = (target_w // self.patch_size) * self.patch_size
-        return resized_img[:, :new_h, :new_w].contiguous()
+        img = transforms.Resize((target_h, target_w))(img)
+        augment = random.random() < 0.92
+        if augment:
+            # Augmentation: crop a subset of the image
+            x0 = random.randint(img.shape[2]//8, (img.shape[2] * 2) // 8)
+            y0 = random.randint(img.shape[1]//8, (img.shape[1] * 2) // 8)
+            x1 = random.randint((img.shape[2] * 3) // 4, img.shape[2])
+            y1 = random.randint((img.shape[1] * 3) // 4, img.shape[1])
+            assert x0 > 0 and y0 > 0 and x1 > x0 and y1 > y0, f"Invalid crop dimensions: x0={x0}, y0={y0}, x1={x1}, y1={y1}"
+            img = img[:, x0:x1, y0:y1]
+            bboxs = [
+                 [ 
+                    max(0, bbox[0] - x0),  max(0, bbox[1] - y0), 
+                    min(x1-x0, bbox[2] - x0), min(y1-y0, bbox[3] - y0)] 
+                for bbox in bboxs
+            ]
+        # Ensure dimensions are divisible by patch_size
+        new_h = (img.shape[1] // self.patch_size) * self.patch_size
+        new_w = (img.shape[2] // self.patch_size) * self.patch_size
+
+        # Crop to ensure dimensions are divisible by patch_size
+        final_img = img[:, :new_h, :new_w].contiguous()
+        valid_labels = []
+        valid_boxes = []
+        for bbox, label in zip(bboxs, labels):
+            if validbox(bbox, (0,0,new_w,new_h)) and validlabel(label):
+                if len(label) > 1 and 'StaticText' in label:
+                    label = [l for l in label if l != 'StaticText']
+                valid_labels.append(label)
+                valid_boxes.append(bbox)
+
+        return final_img, valid_boxes
 
     def scale_bbox(self, bbox, scale_w, scale_h):
         return [
@@ -146,14 +184,17 @@ def get_batch(dataset, BS, patch_size, max_batch_tokens):
                 yield batch
             break
 
-def display_img(img, bboxes, desc='sample_bbox'):
+def display_img(img, bboxes, desc='sample_bbox', labels=None):
     img_pil = transforms.ToPILImage()(img.cpu())
     
     if isinstance(bboxes, torch.Tensor):
         bboxes = bboxes.view(-1, 4).tolist()
     
-    for bbox in bboxes:
-        img_pil = apply_bbox_to_image(img_pil, bbox)
+    if labels is None:
+        labels = [None] * len(bboxes)
+
+    for bbox, label in zip(bboxes, labels):
+        img_pil = apply_bbox_to_image(img_pil, bbox, label=label)
     
     # Create the 'vis' directory if it doesn't exist
     os.makedirs('vis', exist_ok=True)
@@ -258,20 +299,26 @@ def validate(model, val_dataset, criterion, device, n_bboxs, n_classes, BS, patc
     model.train()
     return avg_loss, avg_cls_accuracy, avg_iou_loss
 
-cls_to_idx = {cls: idx for idx, cls in enumerate(sorted({
-    'rowheader', 'doc-subtitle', 'application', 'table', 'contentinfo', 'columnheader', 'mark', 'menu', 'group', 'status', 
-    'HeaderAsNonLandmark', 'link', 'DisclosureTriangle', 'PluginObject', 'Canvas', 'heading', 'menuitem', 'rowgroup', 
-    'definition', 'document', 'option', 'DescriptionList', 'progressbar', 'Iframe', 'blockquote', 'toolbar', 'banner', 
-    'list', 'emphasis', 'insertion', 'row', 'code', 'listitem', 'deletion', 'StaticText', 'Figcaption', 'LayoutTableCell', 
-    'gridcell', 'LayoutTable', 'region', 'tablist', 'combobox', 'form', 'separator', 'Section', 'RootWebArea', 'superscript', 
-    'slider', 'EmbeddedObject', 'button', 'Pre', 'article', 'LabelText', 'alert', 'tab', 'generic', 'IframePresentational', 
-    'FooterAsNonLandmark', 'DescriptionListTerm', 'img', 'DescriptionListDetail', 'listbox', 'tabpanel', 'figure', 'Legend', 
-    'radio', 'switch', 'log', 'navigation', 'paragraph', 'dialog', 'LineBreak', 'graphics-symbol', 'menubar', 'treeitem', 
-    'note', 'LayoutTableRow', 'main', 'ListMarker', 'Ruby', 'complementary', 'subscript', 'Abbr', 'search', 'checkbox', 
-    'textbox', 'time', 'strong'
-}))}
+blacklist = {
+    'separator', 'LayoutTableCell', 'LayoutTableRow', 'generic', 'Pre', 'LineBreak',
+    'group', 'application', 'document', 'emphasis', 'strong', 'insertion', 'deletion',
+    'superscript', 'subscript', 'LayoutTable', 'RootWebArea', 'ListMarker'
+}
 
-assert len(cls_to_idx) == 88, f"Expected 88 classes, but got {len(cls_to_idx)}"
+cls_to_idx = {cls: idx for idx, cls in enumerate(sorted({
+    cls for cls in {
+    'rowheader', 'doc-subtitle', 'table', 'contentinfo', 'columnheader', 'mark', 'menu', 'status', 
+    'HeaderAsNonLandmark', 'link', 'DisclosureTriangle', 'PluginObject', 'Canvas', 'heading', 'menuitem', 'rowgroup', 
+    'definition', 'option', 'DescriptionList', 'progressbar', 'Iframe', 'blockquote', 'toolbar', 'banner', 
+    'list', 'row', 'code', 'listitem', 'StaticText', 'Figcaption', 
+    'gridcell', 'region', 'tablist', 'combobox', 'form', 'Section', 
+    'slider', 'EmbeddedObject', 'button', 'article', 'LabelText', 'alert', 'tab', 'IframePresentational', 
+    'FooterAsNonLandmark', 'DescriptionListTerm', 'img', 'DescriptionListDetail', 'listbox', 'tabpanel', 'figure', 'Legend', 
+    'radio', 'switch', 'log', 'navigation', 'paragraph', 'dialog', 'graphics-symbol', 'menubar', 'treeitem', 
+    'note', 'main', 'Ruby', 'complementary', 'Abbr', 'search', 'checkbox', 
+    'textbox', 'time'
+    } if cls not in blacklist
+}))}
 
 def box_cxcywh_to_xyxy(x):
     x_c, y_c, w, h = x.unbind(-1)
@@ -291,7 +338,7 @@ def normalize_coords(x, img_sizes):
     assert x.dim() == img_sizes.dim()+1
     
     x0, y0, x1, y1 = x.unbind(-1)
-    imgw, imgh = img_sizes.unbind(-1)
+    imgh, imgw = img_sizes.unbind(-1)
     
     # Add dimensions to allow broadcasting
     if x.dim() == 3: imgw, imgh = imgw[:, None], imgh[:, None]  # [bs, 1, 1]
@@ -332,23 +379,23 @@ def main():
     global BS, patch_size, max_batch_tokens
 
     # NaViT config
-    logging = 1
+    logging = 0
     val = 0
     BS = 2
     patch_size = 32
     max_img_size = patch_size*200 # 1920x1080
     max_batch_tokens = 1920//patch_size * 1080//patch_size
     n_classes = len(cls_to_idx)
-    n_bboxs = 5
+    n_bboxs = 100
     dim_head = 64
     n_heads = 2
     dim = 1024
     depth = 8
     # loss config
-    EOS_CONF = 0.0
-    CLS_WEIGHT = 0.0
-    GIOU_WEIGHT = 0.0
-    L1_WEIGHT = 1.0
+    EOS_CONF = 0.1
+    CLS_WEIGHT = 1.0
+    GIOU_WEIGHT = 1.0
+    L1_WEIGHT = 3.0
 
     if logging:
         wandb.login(key=os.getenv("WANDB_API_KEY"))
@@ -395,7 +442,7 @@ def main():
     print("Fetching 10 batches from train_dataset:")
     batches = []
     batch_generator = get_batch(train_dataset, BS, patch_size, max_batch_tokens)
-    for i in range(10):
+    for i in range(30):
         try:
             batch = next(batch_generator)
             batches.append(batch)
@@ -444,8 +491,8 @@ def main():
                     #print(f'number of bboxes: {len(sampled_bboxes)}')
                     bbox_target = torch.cat([sampled_bboxes, torch.zeros(n_bboxs - len(sampled_bboxes), 4, device=device)])
                     bbox_target = box_xyxy_to_cxcywh(bbox_target)
-                    img_wh = [img.shape[1], img.shape[2]]
-                    normalized_bbox_target = normalize_coords(bbox_target, torch.tensor(img_wh))
+                    img_hw = [img.shape[1], img.shape[2]]
+                    normalized_bbox_target = normalize_coords(bbox_target, torch.tensor(img_hw))
 
                     display_img(img, sampled_bboxes, desc=f"target_{i}")
                     i+=1
@@ -457,7 +504,7 @@ def main():
                     target_dict['boxes'] = normalized_bbox_target
                     target_dict['labels'] = padded_labels
                     targets.append(target_dict)
-                    img_sizes.append(img_wh)
+                    img_sizes.append(img_hw)
 
                 batched_imgs.append(imgs)
 
@@ -529,18 +576,18 @@ def main():
                 print(f"Epoch {epoch+1}/{epochs}, Validation Loss: {val_loss:.4f}, "
                     f"Classification Accuracy: {val_cls_accuracy:.4f}, IoU Loss: {val_iou_loss:.4f}")
 
-            if logging:
-                wandb.log({
-                    "epoch": epoch+1,
-                    "val_loss": val_loss,
-                    "val_cls_accuracy": val_cls_accuracy,
-                    "val_iou_loss": val_iou_loss
-                })
-            
-                # Save model at the end of each epoch
-                save_path = f'vit_checkpoint_epoch_{epoch+1}.pt'
-                torch.save(vit.state_dict(), save_path)
-                print(f"Model saved to {save_path}")
+                if logging:
+                    wandb.log({
+                        "epoch": epoch+1,
+                        "val_loss": val_loss,
+                        "val_cls_accuracy": val_cls_accuracy,
+                        "val_iou_loss": val_iou_loss
+                    })
+                
+                    # Save model at the end of each epoch
+                    save_path = f'vit_checkpoint_epoch_{epoch+1}.pt'
+                    torch.save(vit.state_dict(), save_path)
+                    print(f"Model saved to {save_path}")
 
     if logging:
         wandb.finish()

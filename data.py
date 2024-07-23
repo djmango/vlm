@@ -1,5 +1,5 @@
 import csv
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import io
 import base64
 import requests
@@ -40,22 +40,23 @@ def display_image_with_bboxes(split='train', index=33):
     # Show the plot
     plt.show()
 
-def apply_bbox_to_image(image, bbox):
+def apply_bbox_to_image(image, bbox, label=None):
     # The image is already a PIL Image object, no need to convert
     draw = ImageDraw.Draw(image)
     x1, y1, x2, y2 = tuple(bbox)
     draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
     
-    # Print shape and coordinates of bbox
-    '''
-    print("Image Shape:", image.size)
-    print("Bounding Box Coordinates:")
-    print("  x1:", x1)
-    print("  y1:", y1)
-    print("  x2:", x2)
-    print("  y2:", y2)
-    input()
-    '''
+    if label is not None:
+        # Calculate the center of the bounding box
+        center_x = (x1 + x2) // 2
+        center_y = (y1 + y2) // 2
+        # Draw the label text in red at the center of the bounding box
+        font = ImageFont.load_default()
+        text_bbox = draw.textbbox((center_x, center_y), str(label), font=font)
+        text_x = center_x - (text_bbox[2] - text_bbox[0]) // 2
+        text_y = center_y - (text_bbox[3] - text_bbox[1]) // 2
+        draw.text((text_x, text_y), str(label), fill="blue", font=font)
+    
     return image
 
 def get_description_from_claude(image):
