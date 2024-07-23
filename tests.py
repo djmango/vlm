@@ -143,6 +143,87 @@ def test_unnormalize_coords_batch():
 
     print("Batch unnormalize test passed successfully!")
 
+def batched_cdist_minkowski(XA: torch.Tensor, XB: torch.Tensor, p: float = 2.0) -> torch.Tensor:
+    """
+    Compute the pairwise Minkowski distance between two batched sets of points.
+
+    Args:
+    XA (torch.Tensor): First set of points with shape (b, n, m) where b is the batch size,
+                       n is the number of points, and m is the dimension of each point.
+    XB (torch.Tensor): Second set of points with shape (b, k, m) where b is the batch size,
+                       k is the number of points, and m is the dimension of each point.
+    p (float): The order of the norm. Default is 2.0 (Euclidean distance).
+
+    Returns:
+    torch.Tensor: A tensor of shape (b, n, k) containing the pairwise distances for each batch.
+
+    Note:
+    This function is a batched equivalent to scipy.spatial.distance.cdist(XA, XB, metric='minkowski', p=p)
+    """
+    if p <= 0:
+        raise ValueError("p must be greater than 0")
+
+    # Ensure inputs are at least 3D (batch, points, dimensions)
+    if XA.dim() == 2:
+        XA = XA.unsqueeze(0)
+    if XB.dim() == 2:
+        XB = XB.unsqueeze(0)
+
+    if XA.dim() != 3 or XB.dim() != 3:
+        raise ValueError("Input tensors must be 3D (batch, points, dimensions)")
+
+    # Check if batch sizes match
+    if XA.size(0) != XB.size(0):
+        raise ValueError("Batch sizes of XA and XB must match")
+
+    # Compute pairwise differences
+    diff = XA.unsqueeze(2) - XB.unsqueeze(1)
+
+    # Compute the p-th power of the absolute differences
+    distances = torch.abs(diff).pow(p)
+
+    # Sum along the last dimension and take the p-th root
+    distances = distances.sum(dim=-1).pow(1/p)
+
+    return distances
+
+
+def test_cdist_equivalence():
+    torch.manual_seed(42)  # For reproducibility
+
+    test_cases = [
+        ((2, 3, 4), (2, 5, 4)),  # Batched case
+        ((1, 10, 3), (1, 15, 3)),  # Single batch
+        ((5, 7, 2), (5, 6, 2)),  # Multiple batches
+        ((3, 100, 5), (3, 80, 5)),  # Larger number of points
+    ]
+
+    for xa_shape, xb_shape in test_cases:
+        XA = torch.rand(*xa_shape)
+        XB = torch.rand(*xb_shape)
+
+        # Compute distances using our function
+        our_distances = batched_cdist_minkowski(XA, XB, p=1.0)
+
+        # Compute distances using torch.cdist
+        torch_distances = torch.cdist(XA, XB, p=1.0)
+
+        # Check if the results are close
+        is_close = torch.allclose(our_distances, torch_distances, rtol=1e-5, atol=1e-8)
+        max_diff = torch.max(torch.abs(our_distances - torch_distances))
+
+        print(f"Test case: XA shape {xa_shape}, XB shape {xb_shape}")
+        print(f"Results match: {is_close}")
+        print(f"Max difference: {max_diff}")
+        print("--------------------")
+
+        # Assert that the results are close
+        assert is_close, f"Results don't match for shapes {xa_shape} and {xb_shape}"
+
+    print("All tests passed successfully!")
+
+# Run the tests
+test_cdist_equivalence()
 # Run the tests
 test_normalize_coords_single_image()
 test_normalize_coords_batch()

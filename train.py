@@ -20,15 +20,9 @@ from detr.models.detr import SetCriterion
 from detr.models.matcher import build_matcher
 from data import apply_bbox_to_image
 from typing import List
+import numpy as np
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# filtering rules
-'''
-    blacklist classes that make think bboxes
-    blacklist meaningless classes for layout, no content
-    only sufficiently fat bboxes
-'''
 
 def validbox(box, bounds):
     left,bottom,right,top = bounds
@@ -42,6 +36,26 @@ def validlabel(labels: List[str]):
     if len(labels) > 2:
         return False
     return not any(label in blacklist for label in labels)
+    
+
+class RandomCropWithBoxes(object):
+    def __init__(self, size):
+        self.size = size
+
+    def __call__(self, image, boxes):
+        h, w = image.shape[1:]
+        new_h, new_w = self.size
+        top = np.random.randint(0, h - new_h)
+        left = np.random.randint(0, w - new_w)
+        image = image[:, top:top+new_h, left:left+new_w]
+        boxes = [[
+            max(0, box[0] - left),
+            max(0, box[1] - top),
+            min(new_w, box[2] - left),
+            min(new_h, box[3] - top)
+        ] for box in boxes]
+
+        return image, boxes
 
 class NaViTDataset(Dataset):
     def __init__(self, dataset, patch_size, max_batch_size):
@@ -83,7 +97,7 @@ class NaViTDataset(Dataset):
 
         scale_w, scale_h = self.get_scale_factors(item['image'].size, key)
         scaled_boxes = [self.scale_bbox(box, scale_w, scale_h) for box in bboxs]
-        image, bboxs = self.resize_and_augment(image, key, scaled_boxes, labels)
+        image, bboxs, labels = self.resize_and_augment(image, key, scaled_boxes, labels)
 
         display_img(image, bboxs, labels=labels, desc=f'img_{idx}')
 
@@ -108,25 +122,19 @@ class NaViTDataset(Dataset):
     def resize_and_augment(self, img, key, bboxs, labels):
         target_w, target_h = self.get_target_resolution(key)
         img = transforms.Resize((target_h, target_w))(img)
-        augment = random.random() < 0.92
+        augment = random.random() < 0.9
         if augment:
-            # Augmentation: crop a subset of the image
-            x0 = random.randint(img.shape[2]//8, (img.shape[2] * 2) // 8)
-            y0 = random.randint(img.shape[1]//8, (img.shape[1] * 2) // 8)
-            x1 = random.randint((img.shape[2] * 3) // 4, img.shape[2])
-            y1 = random.randint((img.shape[1] * 3) // 4, img.shape[1])
-            assert x0 > 0 and y0 > 0 and x1 > x0 and y1 > y0, f"Invalid crop dimensions: x0={x0}, y0={y0}, x1={x1}, y1={y1}"
-            img = img[:, x0:x1, y0:y1]
-            bboxs = [
-                 [ 
-                    max(0, bbox[0] - x0),  max(0, bbox[1] - y0), 
-                    min(x1-x0, bbox[2] - x0), min(y1-y0, bbox[3] - y0)] 
-                for bbox in bboxs
-            ]
+            min_crop_size = (img.shape[1] // 2, img.shape[2] // 2)
+            max_crop_size = (img.shape[1]-1, img.shape[2]-1)
+
+            random_crop = RandomCropWithBoxes((
+                random.randint(min_crop_size[0], max_crop_size[0]),
+                random.randint(min_crop_size[1], max_crop_size[1])
+            ))
+            img, bboxs = random_crop(img, bboxs)
         # Ensure dimensions are divisible by patch_size
         new_h = (img.shape[1] // self.patch_size) * self.patch_size
         new_w = (img.shape[2] // self.patch_size) * self.patch_size
-
         # Crop to ensure dimensions are divisible by patch_size
         final_img = img[:, :new_h, :new_w].contiguous()
         valid_labels = []
@@ -137,8 +145,7 @@ class NaViTDataset(Dataset):
                     label = [l for l in label if l != 'StaticText']
                 valid_labels.append(label)
                 valid_boxes.append(bbox)
-
-        return final_img, valid_boxes
+        return final_img, valid_boxes, valid_labels
 
     def scale_bbox(self, bbox, scale_w, scale_h):
         return [
@@ -202,102 +209,6 @@ def display_img(img, bboxes, desc='sample_bbox', labels=None):
     # Save the image as a PNG file using PIL
     img_pil.save(f'vis/{desc}.png')
 
-# model, val_dataset, criterion, device, n_bboxs, n_classes
-def validate(model, val_dataset, criterion, device, n_bboxs, n_classes, BS, patch_size, max_batch_tokens):
-    print('validating...')
-    model.eval()
-    total_loss = 0
-    total_cls_accuracy = 0
-    total_iou_loss = 0
-    num_samples = 0
-    with torch.no_grad():
-        idx = 0 
-        for i, batch in enumerate(get_batch(val_dataset, BS, patch_size, max_batch_tokens)):
-            batched_imgs = []
-            targets = []
-            img_sizes = []
-
-            for sample in batch:
-                imgs = []
-                for img, bboxes, labels in sample:
-                    target_dict = dict()
-                    display_img(img, bboxes, desc=f"validate_truth_img{idx}")
-                    idx += 1
-                    imgs.append(img.to(device))
-
-                    #sampled_idxs = torch.randperm(len(bboxes))[:min(n_bboxs, len(bboxes))]
-                    sampled_idxs = torch.arange(min(n_bboxs, len(bboxes)))
-                    
-                    sampled_bboxes = torch.tensor(bboxes, device=device)[sampled_idxs]
-                    sampled_labels = [labels[i][0] for i in sampled_idxs]
-                    
-                    bbox_target = torch.cat([sampled_bboxes, torch.zeros(n_bboxs - len(sampled_bboxes), 4, device=device)])
-                    bbox_target = box_xyxy_to_cxcywh(bbox_target)
-                    img_wh = [img.shape[2], img.shape[1]]
-                    normalized_bbox_target = normalize_coords(bbox_target, torch.tensor(img_wh))
-                    
-                    labels = torch.tensor([cls_to_idx[label] for label in sampled_labels], dtype=torch.long, device=device)
-                    padded_labels = torch.full((n_bboxs,), n_classes, dtype=torch.long, device=device)
-                    padded_labels[:len(labels)] = labels
-                    
-                    target_dict['boxes'] = normalized_bbox_target
-                    target_dict['labels'] = padded_labels
-                    targets.append(target_dict)
-                    img_sizes.append(img_wh)
-
-                batched_imgs.append(imgs)
-
-            out_cls, out_bbox = model(batched_imgs)
-
-            bs, _ = out_cls.shape
-            out_cls = out_cls.view(bs, n_bboxs, n_classes+1)
-            out_bbox = out_bbox.view(bs, n_bboxs, 4)
-
-
-            pred_bboxes = box_cxcywh_to_xyxy(out_bbox)
-
-            # convert
-            i = 0
-            for sample in batch:
-                for img, _, _ in sample:
-                    display_img(img, pred_bboxes[i], desc=f"validate_pred_img{idx}")
-                    i += 1
-
-            normalized_out_bbox = normalize_coords(out_bbox, torch.tensor(img_sizes, device=device))
-
-            outs = {'pred_logits': out_cls, 'pred_boxes': normalized_out_bbox}
-
-            loss_dict = criterion(outs, targets)
-            weight_dict = criterion.weight_dict
-            losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
-
-            pred_cls = out_cls.argmax(dim=-1)
-            target_cls = torch.stack([t['labels'] for t in targets])
-            cls_accuracy = (pred_cls == target_cls).float().mean()
-
-            pred_boxes = box_cxcywh_to_xyxy(out_bbox)
-            target_boxes = torch.stack([box_cxcywh_to_xyxy(t['boxes']) for t in targets])
-            
-            indices = criterion.matcher(outs, targets)
-            
-            iou_loss = 0
-            for idx, (pred_idx, target_idx) in enumerate(indices):
-                if len(pred_idx) > 0:
-                    matched_pred_boxes = pred_boxes[idx][pred_idx]
-                    matched_target_boxes = target_boxes[idx][target_idx]
-                    iou = box_iou(matched_pred_boxes, matched_target_boxes)
-                    iou_loss += (1 - iou.diag()).mean()
-            
-            total_loss += losses.item()
-            total_cls_accuracy += cls_accuracy.item()
-            total_iou_loss += iou_loss
-            num_samples += bs
-
-    avg_loss = total_loss / num_samples
-    avg_cls_accuracy = total_cls_accuracy / num_samples
-    avg_iou_loss = total_iou_loss / num_samples
-    model.train()
-    return avg_loss, avg_cls_accuracy, avg_iou_loss
 
 blacklist = {
     'separator', 'LayoutTableCell', 'LayoutTableRow', 'generic', 'Pre', 'LineBreak',
@@ -365,6 +276,108 @@ def unnormalize_coords(x, img_sizes):
     # Unnormalize coordinates
     return torch.stack([cx * imgw, cy * imgh, w * imgw, h * imgh], dim=-1)
 
+# model, val_dataset, criterion, device, n_bboxs, n_classes
+def validate(model, val_dataset, criterion, device, n_bboxs, n_classes, BS, patch_size, max_batch_tokens):
+    print('validating...')
+    model.eval()
+    total_loss = 0
+    total_cls_accuracy = 0
+    total_iou_loss = 0
+    num_samples = 0
+    with torch.no_grad():
+        i = 0 
+        j = 0
+        for batch_idx, batch in enumerate(get_batch(val_dataset, BS, patch_size, max_batch_tokens)):
+            batched_imgs = []
+            targets = []
+            img_sizes = []
+            for sample in batch:
+                imgs = []
+                for img, bboxes, labels in sample:
+                    target_dict = dict()
+                    display_img(img, bboxes, desc=f"validate_truth_img{idx}")
+                    idx += 1
+                    imgs.append(img.to(device))
+
+                    #sampled_idxs = torch.randperm(len(bboxes))[:min(n_bboxs, len(bboxes))]
+                    sampled_idxs = torch.arange(min(n_bboxs, len(bboxes)))
+                    
+                    sampled_bboxes = torch.tensor(bboxes, device=device)[sampled_idxs]
+                    sampled_labels = [labels[i][0] for i in sampled_idxs]
+                    
+                    bbox_target = torch.cat([sampled_bboxes, torch.zeros(n_bboxs - len(sampled_bboxes), 4, device=device)])
+                    bbox_target = box_xyxy_to_cxcywh(bbox_target)
+                    img_hw = [img.shape[1], img.shape[2]]
+                    normalized_bbox_target = normalize_coords(bbox_target, torch.tensor(img_hw))
+                    
+                    display_img(img, sampled_bboxes, desc=f"target_{i}")
+                    i+=1
+                    
+                    labels = torch.tensor([cls_to_idx[label] for label in sampled_labels], dtype=torch.long, device=device)
+                    padded_labels = torch.full((n_bboxs,), n_classes, dtype=torch.long, device=device)
+                    padded_labels[:len(labels)] = labels
+                    
+                    target_dict['boxes'] = normalized_bbox_target
+                    target_dict['labels'] = padded_labels
+                    targets.append(target_dict)
+                    img_sizes.append(img_hw)
+
+                batched_imgs.append(imgs)
+
+            out_cls, out_bbox = model(batched_imgs)
+
+            bs, _ = out_cls.shape
+            out_cls = out_cls.view(bs, n_bboxs, n_classes+1)
+            out_bbox = out_bbox.view(bs, n_bboxs, 4)
+
+
+            pred_bboxes = box_cxcywh_to_xyxy(unnormalize_coords(out_bbox, torch.tensor(img_sizes, device=device)))
+            # convert
+            i = 0
+            for sample in batch:
+                for img, _, _ in sample:
+                    #print(targets[i]['boxes'])
+                    #print(out_bbox[i])
+                    display_img(img, pred_bboxes[i], desc=f"pred_{j}")
+                    i += 1
+                    j += 1
+
+            normalized_out_bbox = normalize_coords(out_bbox, torch.tensor(img_sizes, device=device))
+
+            outs = {'pred_logits': out_cls, 'pred_boxes': normalized_out_bbox}
+
+            loss_dict = criterion(outs, targets)
+            weight_dict = criterion.weight_dict
+            losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+
+            pred_cls = out_cls.argmax(dim=-1)
+            target_cls = torch.stack([t['labels'] for t in targets])
+            cls_accuracy = (pred_cls == target_cls).float().mean()
+
+            pred_boxes = box_cxcywh_to_xyxy(out_bbox)
+            target_boxes = torch.stack([box_cxcywh_to_xyxy(t['boxes']) for t in targets])
+            
+            indices = criterion.matcher(outs, targets)
+            
+            iou_loss = 0
+            for idx, (pred_idx, target_idx) in enumerate(indices):
+                if len(pred_idx) > 0:
+                    matched_pred_boxes = pred_boxes[idx][pred_idx]
+                    matched_target_boxes = target_boxes[idx][target_idx]
+                    iou = box_iou(matched_pred_boxes, matched_target_boxes)
+                    iou_loss += (1 - iou.diag()).mean()
+            
+            total_loss += losses.item()
+            total_cls_accuracy += cls_accuracy.item()
+            total_iou_loss += iou_loss
+            num_samples += bs
+
+    avg_loss = total_loss / num_samples
+    avg_cls_accuracy = total_cls_accuracy / num_samples
+    avg_iou_loss = total_iou_loss / num_samples
+    model.train()
+    return avg_loss, avg_cls_accuracy, avg_iou_loss
+
 def main():
     import os
     import shutil
@@ -381,16 +394,19 @@ def main():
     # NaViT config
     logging = 0
     val = 0
-    BS = 2
-    patch_size = 32
+    BS = 4
+    patch_size = 28
     max_img_size = patch_size*200 # 1920x1080
     max_batch_tokens = 1920//patch_size * 1080//patch_size
     n_classes = len(cls_to_idx)
     n_bboxs = 100
     dim_head = 64
-    n_heads = 2
+    n_heads = 4
     dim = 1024
-    depth = 8
+    depth = 14
+    
+    # 15 GB at patch_size = 16, depth = 2, n_heads = 4, dim = 1024
+    # 
     # loss config
     EOS_CONF = 0.1
     CLS_WEIGHT = 1.0
@@ -442,7 +458,7 @@ def main():
     print("Fetching 10 batches from train_dataset:")
     batches = []
     batch_generator = get_batch(train_dataset, BS, patch_size, max_batch_tokens)
-    for i in range(30):
+    for i in range(10):
         try:
             batch = next(batch_generator)
             batches.append(batch)
@@ -465,7 +481,6 @@ def main():
 
     epochs = 10000
     for epoch in range(epochs):
-
         vit.train()
         imgs_processed = 0
         epoch_time = time.time()
@@ -536,7 +551,7 @@ def main():
             optimizer.zero_grad()
             losses.backward()
 
-            #torch.nn.utils.clip_grad_norm_(vit.parameters(), max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(vit.parameters(), max_grad_norm)
 
             optimizer.step()
 
