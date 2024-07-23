@@ -62,10 +62,18 @@ class COCODataset(Dataset):
 
             if random.random() < 0.5:
                 image, boxes, labels = self.random_crop_with_boxes(image, boxes, labels)
-                if len(boxes) > 0 and len(boxes) == len(labels):
-                    break
-                else:
-                    print("invalid")
+            
+            # Filter boxes and labels to keep only those with label < 81
+            filtered = [(box, label) for box, label in zip(boxes, labels) if label < 81]
+            
+            # Unzip the filtered list back into separate lists
+            if filtered:
+                boxes, labels = zip(*filtered)
+            else:
+                boxes, labels = [], []
+
+            if len(boxes) > 0 and len(boxes) == len(labels):
+                break
         
         # Ensure dimensions are divisible by patch_size
         w, h = image.size
@@ -220,12 +228,13 @@ def main():
     
     world_size = torch.distributed.get_world_size()
 
-    logging = args.local_rank == 0 and 0
-    BS = 2
-    patch_size = 28
+    logging = args.local_rank == 0 and 1
+    BS = 4
+    patch_size = 32
     max_img_size = patch_size * 200
     max_batch_tokens = 1333 // patch_size * 1333 // patch_size
-    n_classes = 91  # COCO has 80 classes, but we add 1 for background
+    # https://gist.githubusercontent.com/AruniRC/7b3dadd004da04c80198557db5da4bda/raw/2f10965ace1e36c4a9dca76ead19b744f5eb7e88/ms_coco_classnames.txt
+    n_classes = 81  # COCO has 80 classes, but we add 1 for background 
     n_bboxs = 100
     dim_head = 64
     n_heads = 8
@@ -294,8 +303,10 @@ def main():
     matcher = build_matcher(cost_class=CLS_WEIGHT, cost_bbox=L1_WEIGHT, cost_giou=GIOU_WEIGHT)
     criterion = SetCriterion(n_classes, matcher, weight_dict, EOS_CONF, losses).to(device)
 
-    if 1:
+    if 0:
         view(train_dataset, BS, patch_size, max_batch_tokens, rank=args.local_rank)
+
+    # 1 hr per epoch using 4 x L40 GPU
 
     for epoch in range(epochs):
 
@@ -335,7 +346,6 @@ def main():
 
             bs, _ = out_cls.shape
             out_cls = out_cls.view(bs, n_bboxs, n_classes+1)
-            out_cls = torch.nn.functional.softmax(out_cls, dim=-1)
             out_bbox = out_bbox.view(bs, n_bboxs, 4)
 
             outs = {'pred_logits': out_cls, 'pred_boxes': out_bbox}
@@ -352,7 +362,7 @@ def main():
             end_time = time.time()
             step_time = end_time - start_time
 
-            print(f'{losses.item():.4f}')
+            print(f'{losses.item():.4f} L, {step_time*1000:.4f} ms, {imgs_processed} imgs')
 
             if logging:
                 log_dict = {
@@ -362,7 +372,7 @@ def main():
                     "learning_rate": optimizer.param_groups[0]['lr']
                 }
                 for k, v in loss_dict.items():
-                    log_dict[f"{k}_loss"] = v.item()
+                    log_dict[f"{k}_loss"] = v.item() if isinstance(v, torch.Tensor) else v
                 wandb.log(log_dict)
 
         print(f'Epoch {epoch} completed, {imgs_processed} images processed')
@@ -378,15 +388,10 @@ def main():
             })
         
         # Save model at the end of each epoch
-        if (epoch + 1) % 50 == 0:
-            save_path = f'vit_coco_checkpoint_epoch_{epoch+1}.pt'
-            model_engine.save_checkpoint(save_path, epoch)
-            print(f"Model saved to {save_path}")
+        save_path = f'vit_coco_checkpoint_epoch_{epoch+1}.pt'
+        model_engine.save_checkpoint(save_path, epoch)
+        print(f"Model saved to {save_path}")
 
-        # Learning rate schedule
-        if epoch == 200:
-            for param_group in optimizer.param_groups:
-                param_group['lr'] *= 0.1
 
     if logging:
         wandb.finish()
@@ -396,16 +401,41 @@ def validate(model_engine, val_dataset, criterion, device, n_bboxs, n_classes, B
     total_loss = 0
     num_batches = 0
     with torch.no_grad():
-        for batch in get_batch(val_dataset, BS, patch_size, max_batch_tokens):
-            images, boxes, labels = zip(*batch)
-            images = torch.stack(images).to(device)
-            
-            # Convert boxes to cxcywh format
-            boxes = [box_xyxy_to_cxcywh(b) for b in boxes]
-            
-            targets = [{'boxes': b.to(device), 'labels': l.to(device)} for b, l in zip(boxes, labels)]
 
-            out_cls, out_bbox = model_engine(images)
+        for batch in get_batch(val_dataset, BS, patch_size, max_batch_tokens):
+
+            batched_imgs = []
+            targets = []
+            img_sizes = []
+            imgs = []
+
+            for img, bboxes, labels in batch:
+                target_dict = {}
+                imgs.append(img.to(device))
+
+                assert len(bboxes) == len(labels)
+
+                num_to_sample = min(n_bboxs, len(bboxes))
+                sampled_idxs = torch.randperm(len(bboxes))[:num_to_sample]
+                
+                sampled_bboxes = torch.tensor(bboxes)[sampled_idxs].to(device)
+                sampled_labels = torch.tensor(labels)[sampled_idxs].to(device, dtype=torch.long)
+                
+                img_hw = [img.shape[1], img.shape[2]]  # height, width
+                
+                target_dict['boxes'] = sampled_bboxes
+                target_dict['labels'] = sampled_labels
+                targets.append(target_dict)
+                img_sizes.append(img_hw)
+
+                batched_imgs.append(imgs)
+
+            out_cls, out_bbox = model_engine(batched_imgs)
+
+            bs, _ = out_cls.shape
+            out_cls = out_cls.view(bs, n_bboxs, n_classes+1)
+            out_bbox = out_bbox.view(bs, n_bboxs, 4)
+
             outs = {'pred_logits': out_cls, 'pred_boxes': out_bbox}
 
             loss_dict = criterion(outs, targets)
