@@ -29,6 +29,8 @@ pip install -U Pillow
 
 pip install scipy wandb datasets nvitop deepspeed matplotlib python-dotenv torchinfo
 
+pip3 install git+https://github.com/waleedka/coco.git#subdirectory=PythonAPI
+
 # Set the environment variable for Hugging Face datasets cache
 export HF_DATASETS_CACHE="/workspace/cache"
 

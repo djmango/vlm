@@ -20,9 +20,9 @@ from vit_pytorch.na_vit import NaViT
 from datasets import load_dataset
 from torch.utils.data import Dataset
 from detr.models.detr import SetCriterion 
-from detr.models.matcher import build_matcher
+from detr.models.matcher import _build_matcher
 from typing import List
-from data import apply_bbox_to_image
+from PIL import ImageDraw, ImageFont
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_default_dtype(torch.float32)
@@ -176,6 +176,26 @@ def display_img(img, bboxes, desc='sample_bbox', labels=None):
     # Save the image as a PNG file using PIL
     img_pil.save(f'vis/{desc}.png')
 
+
+def apply_bbox_to_image(image, bbox, label=None):
+    # The image is already a PIL Image object, no need to convert
+    draw = ImageDraw.Draw(image)
+    x1, y1, x2, y2 = tuple(bbox)
+    draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
+    
+    if label is not None:
+        # Calculate the center of the bounding box
+        center_x = (x1 + x2) // 2
+        center_y = (y1 + y2) // 2
+        # Draw the label text in red at the center of the bounding box
+        font = ImageFont.load_default()
+        text_bbox = draw.textbbox((center_x, center_y), str(label), font=font)
+        text_x = center_x - (text_bbox[2] - text_bbox[0]) // 2
+        text_y = center_y - (text_bbox[3] - text_bbox[1]) // 2
+        draw.text((text_x, text_y), str(label), fill="blue", font=font)
+    
+    return image
+    
 def get_batch(dataset, BS, patch_size, max_batch_tokens):
     while True:
         batch = []
@@ -229,7 +249,7 @@ def main():
     world_size = torch.distributed.get_world_size()
 
     logging = args.local_rank == 0 and 1
-    BS = 4
+    BS = 2
     patch_size = 32
     max_img_size = patch_size * 200
     max_batch_tokens = 1333 // patch_size * 1333 // patch_size
@@ -237,7 +257,7 @@ def main():
     n_classes = 81  # COCO has 80 classes, but we add 1 for background 
     n_bboxs = 100
     dim_head = 64
-    n_heads = 8
+    n_heads = 6
     dim = 1024
     depth = 14
     epochs = 300//2  # As per DETR paper
@@ -280,8 +300,8 @@ def main():
     #vit.init_weights()
 
     # Load COCO dataset
-    train_dataset = load_dataset("rafaelpadilla/coco2017", split="train", cache_dir='/workspace/cache')
-    val_dataset = load_dataset("rafaelpadilla/coco2017", split="val", cache_dir='/workspace/cache')
+    train_dataset = load_dataset("rafaelpadilla/coco2017", split="train", cache_dir='cache')
+    val_dataset = load_dataset("rafaelpadilla/coco2017", split="val", cache_dir='cache')
 
     # Split datasets based on world_size and local_rank
     world_size = torch.distributed.get_world_size()
@@ -300,7 +320,7 @@ def main():
 
     losses = ['labels', 'boxes', 'cardinality']
     weight_dict = {'loss_ce': CLS_WEIGHT, 'loss_bbox': L1_WEIGHT, 'loss_giou': GIOU_WEIGHT}
-    matcher = build_matcher(cost_class=CLS_WEIGHT, cost_bbox=L1_WEIGHT, cost_giou=GIOU_WEIGHT)
+    matcher = _build_matcher(cost_class=CLS_WEIGHT, cost_bbox=L1_WEIGHT, cost_giou=GIOU_WEIGHT)
     criterion = SetCriterion(n_classes, matcher, weight_dict, EOS_CONF, losses).to(device)
 
     if 0:
