@@ -1,7 +1,7 @@
 {
-    "train_micro_batch_size_per_gpu": 4,
+    "train_micro_batch_size_per_gpu": 6,
     "gradient_accumulation_steps": 1,
-    "gradient_clipping": 1.0,
+    "gradient_clipping": 0.1,
     "optimizer": {
       "type": "AdamW",
       "params": {

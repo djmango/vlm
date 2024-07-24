@@ -27,9 +27,9 @@ echo "Sobumodule setup complete."
 
 pip install -U Pillow
 
-pip install scipy wandb datasets nvitop deepspeed matplotlib python-dotenv torchinfo
+pip install scipy wandb datasets nvitop deepspeed matplotlib python-dotenv torchinfo cython 
 
-pip3 install git+https://github.com/waleedka/coco.git#subdirectory=PythonAPI
+pip install -U pycocotools
 
 # Set the environment variable for Hugging Face datasets cache
 export HF_DATASETS_CACHE="/workspace/cache"
@@ -40,6 +40,6 @@ export COCO_PATH='/workspace/coco'
 
 echo "HF_DATASETS_CACHE set to /workspace/cache"
 
-deepspeed --num_gpus=3 dist.py --deepspeed --deepspeed_config ds_config.json
+deepspeed --num_gpus=3 test.py --deepspeed --deepspeed_config ds_config.json
 
 # from torchinfo import summary

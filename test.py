@@ -25,10 +25,46 @@ from detr.datasets import build_dataset, get_coco_api_from_dataset
 from detr.datasets.coco_eval import CocoEvaluator
 from detr.util.misc import collate_fn
 from typing import List
-from data import apply_bbox_to_image
+import torch.nn.functional as F
+import torchvision.transforms.functional as T
+from torch.distributed import all_reduce, ReduceOp
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_default_dtype(torch.float32)
+
+def preprocess(samples, targets, patch_size=32):
+    # Function to round up to the nearest multiple of patch_size
+    def round_up(x, p):
+        return ((x + p - 1) // p) * p
+
+    processed_samples = []
+    processed_targets = []
+
+    for img, target in zip(samples.tensors, targets):
+        # Get original dimensions
+        c, h, w = img.shape
+        
+        # Calculate new dimensions
+        new_h = round_up(h, patch_size)
+        new_w = round_up(w, patch_size)
+        
+        # Resize image
+        resized_img = T.resize(img, (new_h, new_w), antialias=True)
+        
+        # Adjust bounding boxes
+        if 'boxes' in target:
+            boxes = target['boxes']
+            boxes[:, [0, 2]] *= (new_w / w)
+            boxes[:, [1, 3]] *= (new_h / h)
+            target['boxes'] = boxes
+
+        processed_samples.append(resized_img)
+        processed_targets.append(target)
+
+    # Stack processed samples
+    processed_samples = torch.stack(processed_samples)
+
+    return processed_samples, processed_targets
 
 class PostProcess(torch.nn.Module):
     """ This module converts the model's output into the format expected by the coco api"""
@@ -59,24 +95,6 @@ class PostProcess(torch.nn.Module):
         results = [{'scores': s, 'labels': l, 'boxes': b} for s, l, b in zip(scores, labels, boxes)]
 
         return results
-
-def display_img(img, bboxes, desc='sample_bbox', labels=None):
-    img_pil = transforms.ToPILImage()(img.cpu())
-    
-    if isinstance(bboxes, torch.Tensor):
-        bboxes = bboxes.view(-1, 4).tolist()
-    
-    if labels is None:
-        labels = [None] * len(bboxes)
-
-    for bbox, label in zip(bboxes, labels):
-        img_pil = apply_bbox_to_image(img_pil, bbox, label=label)
-    
-    # Create the 'vis' directory if it doesn't exist
-    os.makedirs('vis', exist_ok=True)
-    
-    # Save the image as a PNG file using PIL
-    img_pil.save(f'vis/{desc}.png')
 
 def get_batch(dataset, BS, patch_size, max_batch_tokens):
     while True:
@@ -131,19 +149,19 @@ def main():
     world_size = torch.distributed.get_world_size()
 
     logging = args.local_rank == 0 and 1
-    BS = 2
+    BS = 5
     patch_size = 32
     max_img_size = patch_size * 200
-    max_batch_tokens = 1333 // patch_size * 1333 // patch_size
+    max_batch_tokens = 1400 // patch_size * 1400 // patch_size
     # https://gist.githubusercontent.com/AruniRC/7b3dadd004da04c80198557db5da4bda/raw/2f10965ace1e36c4a9dca76ead19b744f5eb7e88/ms_coco_classnames.txt
-    n_classes = 81  # COCO has 80 classes, but we add 1 for background 
+    n_classes = 92  # COCO has 80 classes, but we add 1 for background 
     n_bboxs = 100
     dim_head = 64
-    n_heads = 6
+    n_heads = 8
     dim = 1024
     head_dim = int(dim * 2)
     depth = 14
-    epochs = 300//2  # As per DETR paper
+    epochs = 300  # As per DETR paper
 
     # loss config
     EOS_CONF = 0.1
@@ -181,11 +199,10 @@ def main():
         token_dropout_prob = 0.1
     ).to(device)
 
+    n_parameters = sum(p.numel() for p in vit.parameters() if p.requires_grad)
+
     #vit.init_weights()
     postprocessors = {'bbox': PostProcess()}
-
-    # Load COCO dataset
-    base_ds = get_coco_api_from_dataset(dataset_val)
 
     class Args:
         def __init__(self):
@@ -198,17 +215,19 @@ def main():
     dataset_train = build_dataset(image_set='train', args=data_args)
     dataset_val = build_dataset(image_set='val', args=data_args)
 
-    sampler_train = torch.utils.data.RandomSampler(dataset_train)
-    sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+    base_ds = get_coco_api_from_dataset(dataset_val)
+
+    sampler_train = DistributedSampler(dataset_train)
+    sampler_val = DistributedSampler(dataset_val, shuffle=False)
 
     batch_sampler_train = torch.utils.data.BatchSampler(
-        sampler_train, args.batch_size, drop_last=True)
+        sampler_train, BS, drop_last=True)
     
     world_size = torch.distributed.get_world_size()
 
     data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
                                    collate_fn=collate_fn, num_workers=world_size)
-    data_loader_val = DataLoader(dataset_val, args.batch_size, sampler=sampler_val,
+    data_loader_val = DataLoader(dataset_val, BS, sampler=sampler_val,
                                  drop_last=False, collate_fn=collate_fn, num_workers=world_size)
 
     # Split datasets based on world_size and local_rank
@@ -229,14 +248,19 @@ def main():
         model_engine.train()
         imgs_processed = 0
 
-        for i, samples, targets in enumerate(data_loader_train):
-            if i > 0: break
+        print("this many imgs per epoch: ")
+        print(len(data_loader_train)*BS)
+
+        for i, (samples, targets) in enumerate(data_loader_train):
+
+            samples, targets = preprocess(samples, targets, patch_size=patch_size)
+
             # both are torch.tensor
             start_time = time.time()
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
             
-            batched_imgs = [samples[i].to(device) for i in range(len(samples))]
-            out_cls, out_bbox = model_engine(batched_imgs)
+            batched_imgs = [samples[i].to(device) for i in range(samples.shape[0])]
+            out_cls, out_bbox = model_engine([batched_imgs])
 
             bs, _ = out_cls.shape
             out_cls = out_cls.view(bs, n_bboxs, n_classes+1)
@@ -246,49 +270,76 @@ def main():
 
             loss_dict = criterion(outputs, targets)
             weight_dict = criterion.weight_dict
-            losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+            weighted_loss_dict = {k: v * weight_dict[k] if k in weight_dict else v for k, v in loss_dict.items()}
+            losses = sum(weighted_loss_dict.values())
 
             model_engine.backward(losses)
             model_engine.step()
 
             imgs_processed += BS
+            
+            # Perform all_reduce for each loss component
+            all_reduce_start_time = time.time()
+            
+            loss_ce = weighted_loss_dict.get('loss_ce', torch.tensor(0.0).to(device))
+            loss_bbox = weighted_loss_dict.get('loss_bbox', torch.tensor(0.0).to(device))
+            loss_giou = weighted_loss_dict.get('loss_giou', torch.tensor(0.0).to(device))
+
+            all_reduce(loss_ce, op=ReduceOp.SUM)
+            all_reduce(loss_bbox, op=ReduceOp.SUM)
+            all_reduce(loss_giou, op=ReduceOp.SUM)
+
+            # Calculate mean values
+            mean_loss_ce = (loss_ce / world_size).item()
+            mean_loss_bbox = (loss_bbox / world_size).item()
+            mean_loss_giou = (loss_giou / world_size).item()
+
+            # Create reduced_loss_dict with averaged values
+            reduced_loss_dict = {
+                'loss_ce': mean_loss_ce,
+                'loss_bbox': mean_loss_bbox,
+                'loss_giou': mean_loss_giou
+            }
+
+            # Calculate total loss from reduced_loss_dict
+            total_loss = sum(reduced_loss_dict.values())
 
             end_time = time.time()
             step_time = end_time - start_time
+            all_reduce_time = end_time - all_reduce_start_time
 
-            print(f'{losses.item():.4f} L, {step_time*1000:.4f} ms, {imgs_processed} imgs')
+            print(f"All reduce time: {all_reduce_time*1000:.4f} ms")
+            print(f'{total_loss:.4f} L, {step_time*1000:.4f} ms, {imgs_processed*world_size} imgs')
 
             if logging:
                 log_dict = {
-                    "total_loss": losses.item(),
+                    "total_loss": total_loss,
                     "step_time_ms": step_time * 1000,
                     "batch": i,
                     "learning_rate": optimizer.param_groups[0]['lr']
                 }
-                for k, v in loss_dict.items():
-                    log_dict[f"{k}_loss"] = v.item() if isinstance(v, torch.Tensor) else v
+                log_dict.update({f"{k}_loss": v for k, v in reduced_loss_dict.items()})
                 wandb.log(log_dict)
 
-        print(f'Epoch {epoch} completed, {imgs_processed} images processed')
+        print(f'Epoch {epoch}/{epochs} completed, {imgs_processed} images processed')
 
         # Validation
-        val_loss = validate(
+        stats, _ = validate(
             model_engine, data_loader_val, criterion, 
             base_ds, postprocessors, n_bboxs, n_classes
             )
-        print(f"Epoch {epoch+1}/{epochs}, Validation Loss: {val_loss:.4f}")
 
         if logging:
-            wandb.log({
-                "epoch": epoch+1,
-                "val_loss": val_loss,
-            })
+            log_stats = {**{f'test_{k}': v for k, v in stats.items()},
+                         'epoch': epoch,
+                         'n_parameters': n_parameters}
+            print(log_stats)
+            wandb.log(log_stats)
         
         # Save model at the end of each epoch
-        save_path = f'vit_coco_checkpoint_epoch_{epoch+1}.pt'
+        save_path = f'NaViT_coco_checkpoint_epoch_{epoch}.pt'
         model_engine.save_checkpoint(save_path, epoch)
         print(f"Model saved to {save_path}")
-
 
     if logging:
         wandb.finish()
@@ -298,15 +349,21 @@ def validate(model_engine, val_dataset, criterion, base_ds, postprocessors, n_bb
     model_engine.eval()
     criterion.eval()
 
-    iou_types = tuple(k for k in ('segm', 'bbox') if k in postprocessors.keys())
+    iou_types = tuple(k for k in ('bbox') if k in postprocessors.keys())
+
+        # Fix: Convert iou_types to a list if it's empty
+    if not iou_types:
+        iou_types = ['bbox']
+
     coco_evaluator = CocoEvaluator(base_ds, iou_types)
 
-    for i, samples, targets in enumerate(val_dataset):
+    for i, (samples, targets) in enumerate(val_dataset):
+        samples, targets = preprocess(samples, targets, patch_size=patch_size)
         # both are torch.tensor
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         
-        batched_imgs = [samples[i].to(device) for i in range(len(samples))]
-        out_cls, out_bbox = model_engine(batched_imgs)
+        batched_imgs = [samples[i].to(device) for i in range(samples.shape[0])]
+        out_cls, out_bbox = model_engine([batched_imgs])
 
         bs, _ = out_cls.shape
         out_cls = out_cls.view(bs, n_bboxs, n_classes+1)
@@ -330,9 +387,9 @@ def validate(model_engine, val_dataset, criterion, base_ds, postprocessors, n_bb
     stats = dict()
     if coco_evaluator is not None:
         if 'bbox' in postprocessors.keys():
-            stats['coco_eval_bbox'] = coco_evaluator.coco_eval['bbox'].stats.tolist()
+            stats['coco_eval_bbox'] = coco_evaluator.coco_eval['bbox'].stats
         if 'segm' in postprocessors.keys():
-            stats['coco_eval_masks'] = coco_evaluator.coco_eval['segm'].stats.tolist()
+            stats['coco_eval_masks'] = coco_evaluator.coco_eval['segm'].stats
 
     return stats, coco_evaluator
 
