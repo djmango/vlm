@@ -187,8 +187,16 @@ def main():
     # Load COCO dataset
     base_ds = get_coco_api_from_dataset(dataset_val)
 
-    dataset_train = build_dataset(image_set='train', args=args)
-    dataset_val = build_dataset(image_set='val', args=args)
+    class Args:
+        def __init__(self):
+            self.dataset_file = 'coco'
+            self.masks = False
+            self.coco_path = os.getenv('COCO_PATH')
+    
+    data_args = Args()
+
+    dataset_train = build_dataset(image_set='train', args=data_args)
+    dataset_val = build_dataset(image_set='val', args=data_args)
 
     sampler_train = torch.utils.data.RandomSampler(dataset_train)
     sampler_val = torch.utils.data.SequentialSampler(dataset_val)
