@@ -31,15 +31,10 @@ pip install scipy wandb datasets nvitop deepspeed matplotlib python-dotenv torch
 
 pip install -U pycocotools
 
-# Set the environment variable for Hugging Face datasets cache
-export HF_DATASETS_CACHE="/workspace/cache"
-
-export WANDB_API_KEY="d9754de6924c1222712c0cd6cc680271a1183e4b"
-
-export COCO_PATH='/workspace/coco'
+# Set environment variables
+export HF_DATASETS_CACHE="/workspace/cache" WANDB_API_KEY="d9754de6924c1222712c0cd6cc680271a1183e4b" COCO_PATH='/workspace/coco' HF_API_KEY='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'
 
 echo "HF_DATASETS_CACHE set to /workspace/cache"
 
-deepspeed --num_gpus=3 test.py --deepspeed --deepspeed_config ds_config.json
+#deepspeed --num_gpus=3 navit_coco.py --deepspeed --deepspeed_config ds_config.json
 
-# from torchinfo import summary
