@@ -7,3 +7,6 @@
 [submodule "detr"]
 	path = detr
 	url = https://github.com/minjunes/detr.git
+[submodule "EVA"]
+	path = EVA
+	url = https://github.com/minjunes/EVA.git

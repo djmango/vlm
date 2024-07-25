@@ -16,7 +16,7 @@ sys.path.append(detr_path)
 sys.path.append(vit_path)
 
 from torchvision.ops import box_iou
-from vit_pytorch.na_vit import NaViT
+from vit_pytorch import SimpleViT
 from datasets import load_dataset
 from torch.utils.data import Dataset, DataLoader, DistributedSampler
 from detr.models.detr import SetCriterion 
@@ -145,21 +145,18 @@ def main():
     global BS, patch_size, max_batch_tokens
     args = parse_args() 
     deepspeed.init_distributed()
-    
     world_size = torch.distributed.get_world_size()
-
     logging = args.local_rank == 0 and 1
-    BS = 5
-    patch_size = 32
-    max_img_size = patch_size * 200
-    max_batch_tokens = 1400 // patch_size * 1400 // patch_size
+    BS = 3
+    patch_size = 16
+    max_img_size = 1440
     # https://gist.githubusercontent.com/AruniRC/7b3dadd004da04c80198557db5da4bda/raw/2f10965ace1e36c4a9dca76ead19b744f5eb7e88/ms_coco_classnames.txt
     n_classes = 92  # COCO has 80 classes, but we add 1 for background 
     n_bboxs = 100
     dim_head = 64
     n_heads = 8
     dim = 1024
-    head_dim = int(dim * 2)
+    class_head_dim = int(dim * 2)
     depth = 14
     epochs = 300  # As per DETR paper
 
@@ -169,6 +166,8 @@ def main():
     GIOU_WEIGHT = 2.0
     L1_WEIGHT = 5.0
 
+    # 39420
+
     if logging:
         wandb.login(key=os.getenv("WANDB_API_KEY"))
         wandb.init(project="NaViT_COCO", config={
@@ -176,7 +175,6 @@ def main():
             "batch_size": BS,
             "patch_size": patch_size,
             "max_img_size": max_img_size,
-            "max_batch_tokens": max_batch_tokens,
             "n_bboxs": n_bboxs,
             "dim_head": dim_head,
             "n_heads": n_heads,
@@ -184,7 +182,7 @@ def main():
             "depth": depth
         })
 
-    vit = NaViT(
+    vit = SimpleViT(
         image_size = max_img_size,
         patch_size = patch_size,
         n_bboxs = n_bboxs,
@@ -192,14 +190,14 @@ def main():
         dim = dim,
         heads = n_heads,
         depth = depth,
-        head_dim = head_dim,
-        mlp_dim = 2048,
-        dropout = 0.1,
-        emb_dropout = 0.1,
-        token_dropout_prob = 0.1
+        dim_head = dim_head,
+        class_head_dim = class_head_dim,
+        mlp_dim = 2048
     ).to(device)
 
     n_parameters = sum(p.numel() for p in vit.parameters() if p.requires_grad)
+
+    print(f'Number of parameters: {n_parameters:,}')
 
     #vit.init_weights()
     postprocessors = {'bbox': PostProcess()}
@@ -259,8 +257,7 @@ def main():
             start_time = time.time()
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
             
-            batched_imgs = [samples[i].to(device) for i in range(samples.shape[0])]
-            out_cls, out_bbox = model_engine([batched_imgs])
+            out_cls, out_bbox = model_engine(samples.to(device))
 
             bs, _ = out_cls.shape
             out_cls = out_cls.view(bs, n_bboxs, n_classes+1)
@@ -358,12 +355,12 @@ def validate(model_engine, val_dataset, criterion, base_ds, postprocessors, n_bb
     coco_evaluator = CocoEvaluator(base_ds, iou_types)
 
     for i, (samples, targets) in enumerate(val_dataset):
+
         samples, targets = preprocess(samples, targets, patch_size=patch_size)
         # both are torch.tensor
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         
-        batched_imgs = [samples[i].to(device) for i in range(samples.shape[0])]
-        out_cls, out_bbox = model_engine([batched_imgs])
+        out_cls, out_bbox = model_engine(samples.to(device))
 
         bs, _ = out_cls.shape
         out_cls = out_cls.view(bs, n_bboxs, n_classes+1)
