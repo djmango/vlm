@@ -149,10 +149,10 @@ def main():
     # https://gist.githubusercontent.com/AruniRC/7b3dadd004da04c80198557db5da4bda/raw/2f10965ace1e36c4a9dca76ead19b744f5eb7e88/ms_coco_classnames.txt
     n_bboxs = 100
     dim_head = 64
-    n_heads = 2
+    n_heads = 8
     dim = 1024
     class_head_dim = int(dim * 2)
-    depth = 10
+    depth = 12
     epochs = 300  # As per DETR paper
     dtype = torch.float16
 
@@ -276,7 +276,7 @@ def main():
                 processed_teacher_samples.append(processed_img)
             
             # Stack the processed images into a single tensor
-            teacher_samples = torch.stack(processed_teacher_samples).to(device, dtype=dtype)
+            teacher_samples = torch.stack(processed_teacher_samples)
 
             target = teacher(teacher_samples.to(f'cuda:{args.local_rank}', dtype=dtype))
 
@@ -292,11 +292,15 @@ def main():
             # Perform all_reduce for each loss component
             all_reduce_start_time = time.time()
             all_reduce(loss, op=ReduceOp.SUM)
+            all_reduce_end_time = time.time()
+            all_reduce_time = all_reduce_end_time - all_reduce_start_time
 
             end_time = time.time()
             step_time = end_time - start_time
+            
+            loss /= world_size
 
-            print(f'{loss:.4f} L, {step_time*1000:.4f} ms, {imgs_processed*world_size} imgs')
+            print(f'{loss:.4f} L, {step_time*1000:.4f} ms, {all_reduce_time*1000:.4f} ms all_reduce, {imgs_processed*world_size} imgs')
 
             if logging:
                 log_dict = {
@@ -311,7 +315,7 @@ def main():
         print(f'Epoch {epoch}/{epochs} completed, {imgs_processed} images processed')
 
         # Save model at the end of each epoch
-        save_path = f'eva_coco_checkpoint_epoch_{epoch}.pt'
+        save_path = f'eva_coco_2_checkpoint_epoch_{epoch}.pt'
         model_engine.save_checkpoint(save_path, epoch)
         print(f"Model saved to {save_path}")
 

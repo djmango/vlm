@@ -9,6 +9,7 @@ from PIL import Image
 
 model_name = "EVA02-CLIP-B-16" 
 pretrained = "/workspace/vlm/EVA02_CLIP_B_psz16_s8B.pt" # or "/path/to/EVA02_CLIP_B_psz16_s8B.pt"
+#pretrained = '/path/to/EVA02_CLIP_B_psz16_s8B.pt'
 
 image_path = "/workspace/vlm/cat.jpeg"
 caption = ["a diagram", "a dog", "a cat"]
@@ -25,6 +26,7 @@ model, _, preprocess = create_model_and_transforms(
 
 tokenizer = get_tokenizer(model_name)
 model = model.to(device)
+vision = model.vision
 
 image = preprocess(Image.open(image_path)).unsqueeze(0).to(device)
 
@@ -32,5 +34,4 @@ with torch.no_grad(), torch.cuda.amp.autocast():
     image_features = model.encode_image(image)
     image_features /= image_features.norm(dim=-1, keepdim=True)
 
-print(iamge_features.shape)
-
+print(image_features.shape)
