@@ -27,9 +27,11 @@ echo "Sobumodule setup complete."
 
 pip install -U Pillow
 
-pip install scipy wandb datasets nvitop deepspeed matplotlib python-dotenv torchinfo cython 
+pip install scipy wandb datasets nvitop deepspeed matplotlib python-dotenv torchinfo cython torchvision==0.14.0 timm ftfy apex
 
 pip install -U pycocotools
+
+pip install xformers==0.0.22.post4 --index-url https://download.pytorch.org/whl/cu118
 
 # Set environment variables
 export HF_DATASETS_CACHE="/workspace/cache" WANDB_API_KEY="d9754de6924c1222712c0cd6cc680271a1183e4b" COCO_PATH='/workspace/coco' HF_API_KEY='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'
