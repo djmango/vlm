@@ -36,5 +36,5 @@ export HF_DATASETS_CACHE="/workspace/cache" WANDB_API_KEY="d9754de6924c1222712c0
 
 echo "HF_DATASETS_CACHE set to /workspace/cache"
 
-#deepspeed --num_gpus=4 eva_coco2.py --deepspeed --deepspeed_config ds_config.json
+#deepspeed --num_gpus=1 vit_coco.py --deepspeed --deepspeed_config ds_config.json
 

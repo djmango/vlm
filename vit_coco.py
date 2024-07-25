@@ -16,7 +16,7 @@ sys.path.append(detr_path)
 sys.path.append(vit_path)
 
 from torchvision.ops import box_iou
-from vit_pytorch import SimpleViT
+from vit_pytorch.det_vit import ViT
 from datasets import load_dataset
 from torch.utils.data import Dataset, DataLoader, DistributedSampler
 from detr.models.detr import SetCriterion 
@@ -30,7 +30,6 @@ import torchvision.transforms.functional as T
 from torch.distributed import all_reduce, ReduceOp
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch.set_default_dtype(torch.float32)
 
 def preprocess(samples, targets, patch_size=32):
     # Function to round up to the nearest multiple of patch_size
@@ -127,7 +126,7 @@ def parse_args():
     return parser.parse_args()
 
 def unnormalize_coords(x, img_sizes):
-    # x shape: [bs, n_bboxs, 4]
+    # x shape: [bs, num_bboxs, 4]
     # img_sizes shape: [bs, 2]
     assert x.dim() == img_sizes.dim()+1
     
@@ -140,33 +139,47 @@ def unnormalize_coords(x, img_sizes):
     # Unnormalize coordinates
     return torch.stack([cx * imgw, cy * imgh, w * imgw, h * imgh], dim=-1)
 
+def load_eva_ckpt(path, vit, keys_to_del=[]):
+    checkpoint = torch.load(path, map_location='cuda')
+    
+    for key in list(checkpoint.keys()):
+        if any(k in key for k in keys_to_del):
+            del checkpoint[key]
+
+    vit.load_state_dict(checkpoint, strict=False)
+
+    n_parameters = sum(p.numel() for p in vit.parameters() if p.requires_grad)
+    print(f"Loaded model with {n_parameters:,} parameters")
 
 def main():
+
     global BS, patch_size, max_batch_tokens
     args = parse_args() 
     deepspeed.init_distributed()
+
     world_size = torch.distributed.get_world_size()
     logging = args.local_rank == 0 and 1
-    BS = 3
+    BS = 2
     patch_size = 16
     max_img_size = 1440
     # https://gist.githubusercontent.com/AruniRC/7b3dadd004da04c80198557db5da4bda/raw/2f10965ace1e36c4a9dca76ead19b744f5eb7e88/ms_coco_classnames.txt
-    n_classes = 92  # COCO has 80 classes, but we add 1 for background 
-    n_bboxs = 100
+    num_classes = 91  # COCO has 80 classes, but we add 1 for background 
+    num_bboxs = 100
     dim_head = 64
-    n_heads = 8
+    num_heads = 2
     dim = 1024
     class_head_dim = int(dim * 2)
-    depth = 14
+    depth = 10
     epochs = 300  # As per DETR paper
+    dtype = torch.float16
+
+    eva_path = '/workspace/vlm/eva_coco_checkpoint_epoch_4.pt/eva_coco_epoch_4.pt'
 
     # loss config
     EOS_CONF = 0.1
     CLS_WEIGHT = 1.0
     GIOU_WEIGHT = 2.0
     L1_WEIGHT = 5.0
-
-    # 39420
 
     if logging:
         wandb.login(key=os.getenv("WANDB_API_KEY"))
@@ -175,31 +188,32 @@ def main():
             "batch_size": BS,
             "patch_size": patch_size,
             "max_img_size": max_img_size,
-            "n_bboxs": n_bboxs,
+            "num_bboxs": num_bboxs,
             "dim_head": dim_head,
-            "n_heads": n_heads,
+            "num_heads": num_heads,
             "dim": dim,
             "depth": depth
         })
 
-    vit = SimpleViT(
+    vit = ViT(
         image_size = max_img_size,
         patch_size = patch_size,
-        n_bboxs = n_bboxs,
-        n_classes = n_classes,
+        num_bboxs = num_bboxs,
+        num_classes = num_classes,
         dim = dim,
-        heads = n_heads,
+        heads = num_heads,
         depth = depth,
         dim_head = dim_head,
-        class_head_dim = class_head_dim,
-        mlp_dim = 2048
-    ).to(device)
+        mlp_dim = 2048,
+        class_head_dim = int(dim * 2)
+    )
 
-    n_parameters = sum(p.numel() for p in vit.parameters() if p.requires_grad)
+    load_eva_ckpt(eva_path, vit)
 
-    print(f'Number of parameters: {n_parameters:,}')
+    vit = vit.to(device, dtype=dtype)
 
-    #vit.init_weights()
+    num_parameters = sum(p.numel() for p in vit.parameters() if p.requires_grad)
+
     postprocessors = {'bbox': PostProcess()}
 
     class Args:
@@ -239,7 +253,7 @@ def main():
     losses = ['labels', 'boxes', 'cardinality']
     weight_dict = {'loss_ce': CLS_WEIGHT, 'loss_bbox': L1_WEIGHT, 'loss_giou': GIOU_WEIGHT}
     matcher = _build_matcher(cost_class=CLS_WEIGHT, cost_bbox=L1_WEIGHT, cost_giou=GIOU_WEIGHT)
-    criterion = SetCriterion(n_classes, matcher, weight_dict, EOS_CONF, losses).to(device)
+    criterion = SetCriterion(num_classes, matcher, weight_dict, EOS_CONF, losses).to(device, dtype=dtype)
 
     for epoch in range(epochs):
 
@@ -249,7 +263,7 @@ def main():
         print("this many imgs per epoch: ")
         print(len(data_loader_train)*BS)
 
-        for i, (samples, targets) in enumerate(data_loader_train):
+        for i, (samples, targets, _) in enumerate(data_loader_train):
 
             samples, targets = preprocess(samples, targets, patch_size=patch_size)
 
@@ -257,11 +271,11 @@ def main():
             start_time = time.time()
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
             
-            out_cls, out_bbox = model_engine(samples.to(device))
+            out_cls, out_bbox = model_engine(samples.to(device, dtype=dtype))
 
             bs, _ = out_cls.shape
-            out_cls = out_cls.view(bs, n_bboxs, n_classes+1)
-            out_bbox = out_bbox.view(bs, n_bboxs, 4)
+            out_cls = out_cls.view(bs, num_bboxs, num_classes+1)
+            out_bbox = out_bbox.view(bs, num_bboxs, 4)
 
             outputs = {'pred_logits': out_cls, 'pred_boxes': out_bbox}
 
@@ -323,7 +337,7 @@ def main():
         # Validation
         stats, _ = validate(
             model_engine, data_loader_val, criterion, 
-            base_ds, postprocessors, n_bboxs, n_classes
+            base_ds, postprocessors, num_bboxs, num_classes
             )
 
         if logging:
@@ -334,7 +348,7 @@ def main():
             wandb.log(log_stats)
         
         # Save model at the end of each epoch
-        save_path = f'NaViT_coco_checkpoint_epoch_{epoch}.pt'
+        save_path = f'det_vit_coco_checkpoint_epoch_{epoch}.pt'
         model_engine.save_checkpoint(save_path, epoch)
         print(f"Model saved to {save_path}")
 
@@ -342,7 +356,7 @@ def main():
         wandb.finish()
 
 @torch.no_grad()
-def validate(model_engine, val_dataset, criterion, base_ds, postprocessors, n_bboxs, n_classes):
+def validate(model_engine, val_dataset, criterion, base_ds, postprocessors, num_bboxs, num_classes):
     model_engine.eval()
     criterion.eval()
 
@@ -360,11 +374,11 @@ def validate(model_engine, val_dataset, criterion, base_ds, postprocessors, n_bb
         # both are torch.tensor
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         
-        out_cls, out_bbox = model_engine(samples.to(device))
+        out_cls, out_bbox = model_engine(samples.to(device, dtype=dtype))
 
         bs, _ = out_cls.shape
-        out_cls = out_cls.view(bs, n_bboxs, n_classes+1)
-        out_bbox = out_bbox.view(bs, n_bboxs, 4)
+        out_cls = out_cls.view(bs, num_bboxs, num_classes+1)
+        out_bbox = out_bbox.view(bs, num_bboxs, 4)
 
         outputs = {'pred_logits': out_cls, 'pred_boxes': out_bbox}
 
