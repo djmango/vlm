@@ -151,6 +151,7 @@ def load_eva_ckpt(path, vit, keys_to_del=[]):
     n_parameters = sum(p.numel() for p in vit.parameters() if p.requires_grad)
     print(f"Loaded model with {n_parameters:,} parameters")
 
+#deepspeed --num_gpus=4 vit_coco.py --deepspeed --deepspeed_config ds_config.json
 def main():
 
     global BS, patch_size, max_batch_tokens
@@ -166,14 +167,14 @@ def main():
     num_classes = 91  # COCO has 80 classes, but we add 1 for background 
     num_bboxs = 100
     dim_head = 64
-    num_heads = 2
+    num_heads = 8
     dim = 1024
     class_head_dim = int(dim * 2)
-    depth = 10
+    depth = 12
     epochs = 300  # As per DETR paper
     dtype = torch.float16
 
-    eva_path = '/workspace/vlm/eva_coco_checkpoint_epoch_4.pt/eva_coco_epoch_4.pt'
+    eva_path = '/workspace/vlm/eva_coco_2_checkpoint_epoch_6.pt/eva_coco.pt'
 
     # loss config
     EOS_CONF = 0.1

@@ -11,16 +11,20 @@ from PIL import Image
 
 
 def test_clip():
-    model_name = "EVA02-CLIP-B-16" 
-    pretrained = "/workspace/vlm/EVA02_CLIP_B_psz16_s8B.pt" # or "/path/to/EVA02_CLIP_B_psz16_s8B.pt"
+    #model_name = "EVA02-CLIP-B-16" 
+    #pretrained = "/workspace/vlm/EVA02_CLIP_B_psz16_s8B.pt" # or "/path/to/EVA02_CLIP_B_psz16_s8B.pt"
     #pretrained = '/path/to/EVA02_CLIP_B_psz16_s8B.pt'
+
+    model_name = "EVA02-CLIP-bigE-14-plus" 
+    pretrained = "/workspace/vlm/EVA02_CLIP_E_psz14_plus_s9B.pt" # or "/path/to/EVA02_CLIP_B_psz16_s8B.pt"
+
 
     image_path = "/workspace/vlm/cat.jpeg"
     caption = ["a diagram", "a dog", "a cat"]
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    model, _, preprocess = create_model_and_transforms(
+    model, _, p = create_model_and_transforms(
         model_name, 
         pretrained, 
         force_custom_clip=True,
@@ -29,8 +33,11 @@ def test_clip():
         )
 
     tokenizer = get_tokenizer(model_name)
-    model = model.to(device)
-    image = preprocess(Image.open(image_path)).unsqueeze(0).to(device)
+    model = model.to(device, dtype=torch.float16)
+    del model.text
+    print('loading done')
+    input()
+    image = p(Image.open(image_path)).unsqueeze(0).to(device, dtype=torch.float16)
 
     with torch.no_grad(), torch.cuda.amp.autocast():
         image_features = model.encode_image(image)
@@ -96,8 +103,9 @@ c = torch.cdist(a, b, p=1)
 def calc_p1(a, b):
     return torch.sum(torch.abs(a[:, None, :] - b[None, :, :]), dim=2)
     
-print(c)
-print(calc_p1(a,b))
+#print(c)
+#print(calc_p1(a,b))
+test_clip()
 
 
 

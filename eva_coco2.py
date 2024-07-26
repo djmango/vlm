@@ -41,7 +41,7 @@ OPENAI_DATASET_MEAN = (0.48145466, 0.4578275, 0.40821073)
 OPENAI_DATASET_STD = (0.26862954, 0.26130258, 0.27577711)
 
 def build_teacher_transform():
-    image_size = 224
+    image_size = 336
     
     return T.Compose([
         T.Resize(image_size, interpolation=T.InterpolationMode.BICUBIC),
@@ -137,6 +137,7 @@ def compute_loss(output, target):
     loss = loss_func(output.float(), target.float())
     return -loss.mean()
 
+# deepspeed --num_gpus=4 eva_coco2.py --deepspeed --deepspeed_config ds_config.json
 def main():
     global BS, patch_size, max_batch_tokens
     args = parse_args() 
@@ -175,8 +176,15 @@ def main():
             "depth": depth
         })
 
-    model_name = "EVA02-CLIP-B-16" 
-    pretrained = "/workspace/vlm/EVA02_CLIP_B_psz16_s8B.pt" # or "/path/to/EVA02_CLIP_B_psz16_s8B.pt"
+    # 4.4B parameter 
+    # around 8.8GB in RAM
+    #model_name = "EVA02-CLIP-bigE-14-plus" 
+    #pretrained = "/workspace/vlm/EVA02_CLIP_E_psz14_plus_s9B.pt" # or "/path/to/EVA02_CLIP_B_psz16_s8B.pt"
+
+    # 1B parameter 
+    model_name = 'EVA02-CLIP-L-14-336'
+    pretrained = '/workspace/vlm/EVA02_CLIP_L_336_psz14_s6B.pt'
+    # model+
 
     # load teacher
     teacher, _, p = create_model_and_transforms(
@@ -193,9 +201,6 @@ def main():
     del p
     teacher = teacher.visual
 
-    # Freeze the teacher model
-    for param in teacher.parameters():
-        param.requires_grad = False
     teacher.eval()  # Set the model to evaluation mode
 
     vit = ViT(
@@ -206,7 +211,7 @@ def main():
         depth = depth,
         dim_head = dim_head,
         mlp_dim = 2048,
-        teacher_dim = 512,
+        teacher_dim = 768,
     ).to(device, dtype=dtype)
 
     n_parameters = sum(p.numel() for p in vit.parameters() if p.requires_grad)
@@ -315,7 +320,7 @@ def main():
         print(f'Epoch {epoch}/{epochs} completed, {imgs_processed} images processed')
 
         # Save model at the end of each epoch
-        save_path = f'eva_coco_2_checkpoint_epoch_{epoch}.pt'
+        save_path = f'{model_name}_epoch_{epoch}.pt'
         model_engine.save_checkpoint(save_path, epoch)
         print(f"Model saved to {save_path}")
 
