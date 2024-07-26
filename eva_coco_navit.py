@@ -149,7 +149,7 @@ def main():
     deepspeed.init_distributed()
     world_size = torch.distributed.get_world_size()
     logging = args.local_rank == 0 and 0
-    BS = 4
+    BS = 2
     patch_size = 16
     max_img_size = 1440
     # https://gist.githubusercontent.com/AruniRC/7b3dadd004da04c80198557db5da4bda/raw/2f10965ace1e36c4a9dca76ead19b744f5eb7e88/ms_coco_classnames.txt
@@ -331,7 +331,7 @@ def main():
         print(f'Epoch {epoch}/{epochs} completed, {imgs_processed} images processed')
 
         # Save model at the end of each epoch
-        save_path = f'eva_coeo_3_checkpoint_epoch_{epoch}.pt'
+        save_path = f'teacher_{model_name}_student=NaViT_g_16_epoch_{epoch}.pt'
         model_engine.save_checkpoint(save_path, epoch)
         print(f"Model saved to {save_path}")
 
