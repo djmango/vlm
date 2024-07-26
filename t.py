@@ -31,7 +31,14 @@ def test_clip():
         pretrained_text='',
         skip_list=['text']
         )
+    BS = 1
+    img_size = 224
+    patch_size = 14
 
+    seq_len = (img_size//patch_size) ** 2
+    mask_ratio = 0.4
+    bool_mask = torch.rand(BS, seq_len) < mask_ratio
+    
     tokenizer = get_tokenizer(model_name)
     model = model.to(device, dtype=torch.float16)
     del model.text
@@ -40,7 +47,7 @@ def test_clip():
     image = p(Image.open(image_path)).unsqueeze(0).to(device, dtype=torch.float16)
 
     with torch.no_grad(), torch.cuda.amp.autocast():
-        image_features = model.encode_image(image)
+        image_features = model.encode_image(image, bool_masked_pos=bool_mask)
         image_features /= image_features.norm(dim=-1, keepdim=True)
 
     print(image_features.shape)
