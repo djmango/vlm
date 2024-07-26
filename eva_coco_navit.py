@@ -182,8 +182,8 @@ def main():
             "depth": depth
         })
 
-    model_name = "EVA02-CLIP-B-16" 
-    pretrained = "/workspace/vlm/EVA02_CLIP_B_psz16_s8B.pt" # or "/path/to/EVA02_CLIP_B_psz16_s8B.pt"
+    model_name = "EVA02-CLIP-bigE-14-plus 
+    pretrained = "/workspace/vlm/EVA02_CLIP_E_psz14_plus_s9B.pt" # or "/path/to/EVA02_CLIP_B_psz16_s8B.pt"
 
     # load teacher
     teacher, _, p = create_model_and_transforms(
