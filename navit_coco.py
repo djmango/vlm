@@ -158,7 +158,7 @@ def main():
     n_heads = 16
     dim = 1024
     class_head_dim = int(dim * 2)
-    depth = 24
+    depth = 12
     epochs = 300  # As per DETR paper
 
     # loss config

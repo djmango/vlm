@@ -50,7 +50,7 @@ def build_teacher_transform():
         T.Normalize(mean=OPENAI_DATASET_MEAN, std=OPENAI_DATASET_STD),
     ])
 
-def preprocess(samples, targets, patch_size=32):
+def preprocess(samples, targets, patch_size=32, navit=False):
     # Function to round up to the nearest multiple of patch_size
     def round_up(x, p):
         return ((x + p - 1) // p) * p
@@ -78,6 +78,9 @@ def preprocess(samples, targets, patch_size=32):
 
         processed_samples.append(resized_img)
         processed_targets.append(target)
+
+    if navit:
+        return processed_samples, processed_targets
 
     # Stack processed samples
     processed_samples = torch.stack(processed_samples)
@@ -146,25 +149,25 @@ def main():
     deepspeed.init_distributed()
     world_size = torch.distributed.get_world_size()
     logging = args.local_rank == 0 and 0
-    BS = 2
+    BS = 4
     patch_size = 16
     max_img_size = 1440
     # https://gist.githubusercontent.com/AruniRC/7b3dadd004da04c80198557db5da4bda/raw/2f10965ace1e36c4a9dca76ead19b744f5eb7e88/ms_coco_classnames.txt
     n_bboxs = 100
     dim_head = 64
     n_heads = 16
-    dim = 1024
+    dim = 2048
     class_head_dim = int(dim * 2)
-    depth = 10
-    mlp_dim = 2048
+    depth = 32
+    mlp_dim = 4096
     epochs = 300  # As per DETR paper
     dtype = torch.float16
 
     # loss config
-    EOS_CONF = 0.1
-    CLS_WEIGHT = 1.0
-    GIOU_WEIGHT = 2.0
-    L1_WEIGHT = 5.0
+    mask_ratio = 0.4
+    teacher_img_size = 224
+    teacher_patch_size = 14
+    seq_len = (224 // 14) ** 2
 
     if logging:
         wandb.login(key=os.getenv("WANDB_API_KEY"))
@@ -267,11 +270,16 @@ def main():
 
         for i, (samples, targets, teacher_samples) in enumerate(data_loader_train):
 
-            samples, targets = preprocess(samples, targets, patch_size=patch_size)
+            is_navit = isinstance(vit, NaViT)
+
+            samples, targets = preprocess(samples, targets, patch_size=patch_size, navit=is_navit)
 
             start_time = time.time()
-            
-            samples = samples.to(device, dtype=dtype)
+
+            if is_navit:
+                samples = [[img.to(device, dtype=dtype) for img in samples]]
+            else:
+                samples = samples.to(device, dtype=dtype)
             
             # Process each image in the teacher_samples tuple
             processed_teacher_samples = []
@@ -281,8 +289,11 @@ def main():
             
             # Stack the processed images into a single tensor
             teacher_samples = torch.stack(processed_teacher_samples)
-
-            target = teacher(teacher_samples.to(f'cuda:{args.local_rank}', dtype=dtype))
+            bool_masked_pos = (torch.randn(BS, seq_len) > mask_ratio).to(f'cuda:{args.local_rank}')
+            target = teacher(
+                teacher_samples.to(f'cuda:{args.local_rank}', dtype=dtype),
+                bool_masked_pos=bool_masked_pos
+            )
 
             out = model_engine(samples)
 
