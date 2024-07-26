@@ -19,7 +19,7 @@ sys.path.append(detr_path)
 sys.path.append(vit_path)
 
 from torchvision.ops import box_iou
-from vit_pytorch.eva import ViT
+from vit_pytorch.eva_navit import NaViT
 from datasets import load_dataset
 from torch.utils.data import Dataset, DataLoader, DistributedSampler
 from detr.models.detr import SetCriterion 
@@ -142,24 +142,24 @@ def compute_loss(output, target):
 
 # 1 x A100 GPU
 # check scaling up
-# deepspeed --num_gpus=1 eva_coco2.py --deepspeed --deepspeed_config ds_config.json
+# deepspeed --num_gpus=2 eva_coco_navit.py --deepspeed --deepspeed_config ds_config.json
 def main():
     global BS, patch_size, max_batch_tokens
     args = parse_args() 
     deepspeed.init_distributed()
     world_size = torch.distributed.get_world_size()
-    logging = args.local_rank == 0 and 0
-    BS = 2
+    logging = args.local_rank == 0 and 1
+    BS = 3
     patch_size = 16
     max_img_size = 1440
     # https://gist.githubusercontent.com/AruniRC/7b3dadd004da04c80198557db5da4bda/raw/2f10965ace1e36c4a9dca76ead19b744f5eb7e88/ms_coco_classnames.txt
     n_bboxs = 100
     dim_head = 64
     n_heads = 16
-    dim = 2048
+    dim = 1024
     class_head_dim = int(dim * 2)
     depth = 32
-    mlp_dim = 4096
+    mlp_dim = 2048
     epochs = 300  # As per DETR paper
     dtype = torch.float16
 
@@ -182,8 +182,8 @@ def main():
             "depth": depth
         })
 
-    model_name = "EVA02-CLIP-bigE-14-plus 
-    pretrained = "/workspace/vlm/EVA02_CLIP_E_psz14_plus_s9B.pt" # or "/path/to/EVA02_CLIP_B_psz16_s8B.pt"
+    model_name = "EVA02-CLIP-bigE-14-plus"
+    pretrained = "/workspace/EVA02_CLIP_E_psz14_plus_s9B.pt" # or "/path/to/EVA02_CLIP_B_psz16_s8B.pt"
 
     # load teacher
     teacher, _, p = create_model_and_transforms(
@@ -205,7 +205,7 @@ def main():
         param.requires_grad = False
     teacher.eval()  # Set the model to evaluation mode
 
-    vit = ViT(
+    vit = NaViT(
         image_size = max_img_size,
         patch_size = patch_size,
         dim = dim,
@@ -213,7 +213,11 @@ def main():
         depth = depth,
         dim_head = dim_head,
         mlp_dim = mlp_dim,
-        teacher_dim = 512,
+        teacher_dim = 1024,
+        dropout = 0.1, 
+        emb_dropout = 0.1, 
+        token_dropout_prob = 0.1
+
     ).to(device, dtype=dtype)
 
     n_parameters = sum(p.numel() for p in vit.parameters() if p.requires_grad)

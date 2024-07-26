@@ -16,7 +16,7 @@ def test_clip():
     #pretrained = '/path/to/EVA02_CLIP_B_psz16_s8B.pt'
 
     model_name = "EVA02-CLIP-bigE-14-plus" 
-    pretrained = "/workspace/vlm/EVA02_CLIP_E_psz14_plus_s9B.pt" # or "/path/to/EVA02_CLIP_B_psz16_s8B.pt"
+    pretrained = "/workspace/EVA02_CLIP_E_psz14_plus_s9B.pt" # or "/path/to/EVA02_CLIP_B_psz16_s8B.pt"
 
 
     image_path = "/workspace/vlm/cat.jpeg"
@@ -42,8 +42,6 @@ def test_clip():
     tokenizer = get_tokenizer(model_name)
     model = model.to(device, dtype=torch.float16)
     del model.text
-    print('loading done')
-    input()
     image = p(Image.open(image_path)).unsqueeze(0).to(device, dtype=torch.float16)
 
     with torch.no_grad(), torch.cuda.amp.autocast():
