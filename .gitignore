@@ -9,8 +9,8 @@ __pycache__/
 # macOS system files
 .DS_Store
 
-# Data directory
-/data/
+# Data directory (recursive)
+/data/**
 
 # Checkpoint directory
 /ckpt/
